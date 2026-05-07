@@ -1,5 +1,7 @@
 # DevTalk
 
+[한국어](README.ko.md)
+
 DevTalk is a small team chat view for VS Code and Cursor. It lives in the activity bar, asks each person for a chat name on first use, and sends messages through Supabase Realtime.
 
 ## Features
