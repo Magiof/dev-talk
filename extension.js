@@ -1,13 +1,13 @@
 const vscode = require('vscode');
-const os = require('os');
 const crypto = require('crypto');
+const { createClient } = require('@supabase/supabase-js');
 
-const MULTICAST_ADDRESS = '239.255.42.99';
-const GLOBAL_BROADCAST_ADDRESS = '255.255.255.255';
-const PORT = 45454;
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
+const DEFAULT_BUCKET = 'devtalk-files';
+const DEFAULT_ROOM_ID = 'general';
 
 function activate(context) {
-  const provider = new LanChatViewProvider(context);
+  const provider = new DevTalkViewProvider(context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('devtalkView', provider)
   );
@@ -21,12 +21,13 @@ function createId() {
     : crypto.randomBytes(16).toString('hex');
 }
 
-class LanChatViewProvider {
+class DevTalkViewProvider {
   constructor(context) {
     this.context = context;
     this.peerId = createId();
     this.webviewView = undefined;
-    this.socket = undefined;
+    this.supabase = undefined;
+    this.channel = undefined;
     this.messages = [];
     this.seenMessageIds = new Set();
     this.unreadCount = 0;
@@ -34,8 +35,12 @@ class LanChatViewProvider {
     this.readMarkerMessageId = undefined;
     this.status = 'Connecting to DevTalk...';
     this.nickname = getNickname(context);
+    this.config = getSupabaseConfig();
+
     if (!this.nickname) {
       this.status = 'Enter your name to start.';
+    } else if (!this.config.ready) {
+      this.status = this.config.message;
     }
   }
 
@@ -59,6 +64,12 @@ class LanChatViewProvider {
       if (message.type === 'send' && typeof message.text === 'string') {
         this.sendChat(message.text);
       }
+      if (message.type === 'uploadFile' && message.file) {
+        this.uploadFile(message.file);
+      }
+      if (message.type === 'openExternal' && typeof message.url === 'string') {
+        vscode.env.openExternal(vscode.Uri.parse(message.url));
+      }
       if (message.type === 'ready') {
         if (this.isViewVisible()) {
           this.markRead();
@@ -68,9 +79,7 @@ class LanChatViewProvider {
       }
     });
 
-    if (this.nickname) {
-      this.startSocket();
-    }
+    this.connect();
     this.updateBadge();
     this.postState();
   }
@@ -108,75 +117,55 @@ class LanChatViewProvider {
     }
   }
 
-  startSocket() {
+  connect() {
     if (!this.nickname) {
       return;
     }
-    if (this.socket) {
+
+    this.config = getSupabaseConfig();
+    if (!this.config.ready) {
+      this.status = this.config.message;
+      this.postState();
       return;
     }
 
-    const dgram = require('dgram');
-    this.socket = dgram.createSocket({
-      type: 'udp4',
-      reuseAddr: true
+    if (this.channel) {
+      return;
+    }
+
+    this.supabase = createClient(this.config.url, this.config.anonKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false
+      }
     });
 
-    this.socket.on('error', (error) => {
-      this.status = `DevTalk unavailable: ${error.message}`;
-      this.postState();
-    });
-
-    this.socket.on('message', (buffer) => {
-      let payload;
-      try {
-        payload = JSON.parse(buffer.toString('utf8'));
-      } catch {
-        return;
-      }
-
-      if (!payload || payload.kind !== 'devtalk-message') {
-        return;
-      }
-      if (payload.peerId === this.peerId) {
-        return;
-      }
-
-      const messageId = String(payload.id || '');
-      if (messageId && this.seenMessageIds.has(messageId)) {
-        return;
-      }
-      if (messageId) {
-        this.seenMessageIds.add(messageId);
-      }
-
-      this.addMessage({
-        id: payload.id || createId(),
-        text: String(payload.text || ''),
-        nickname: String(payload.nickname || 'Someone'),
-        mine: false,
-        sentAt: Number(payload.sentAt) || Date.now()
-      });
-    });
-
-    this.socket.bind(PORT, () => {
-      try {
-        this.socket.setBroadcast(true);
-        this.socket.addMembership(MULTICAST_ADDRESS);
-        this.socket.setMulticastTTL(1);
-        this.status = 'Same-Wi-Fi DevTalk on UDP port ' + PORT;
-      } catch (error) {
-        this.status = `DevTalk unavailable: ${error.message}`;
-      }
-      this.postState();
-    });
-
-    this.context.subscriptions.push({
-      dispose: () => {
-        if (this.socket) {
-          this.socket.close();
+    this.channel = this.supabase.channel('devtalk:' + this.config.roomId, {
+      config: {
+        broadcast: {
+          self: false
         }
       }
+    });
+
+    this.channel.on('broadcast', { event: 'message' }, ({ payload }) => {
+      this.receiveMessage(payload);
+    });
+
+    this.channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        this.status = 'Connected to DevTalk room ' + this.config.roomId;
+      } else if (status === 'CHANNEL_ERROR') {
+        this.status = 'DevTalk connection failed. Check Supabase settings.';
+      } else if (status === 'TIMED_OUT') {
+        this.status = 'DevTalk connection timed out.';
+      } else if (status === 'CLOSED') {
+        this.status = 'DevTalk connection closed.';
+      } else {
+        this.status = 'Connecting to DevTalk...';
+      }
+      this.postState();
     });
   }
 
@@ -189,35 +178,147 @@ class LanChatViewProvider {
     this.nickname = nickname;
     this.context.globalState.update('nickname', nickname);
     this.status = 'Connecting to DevTalk...';
-    this.startSocket();
+    this.connect();
     this.postState();
   }
 
-  sendChat(rawText) {
+  async sendChat(rawText) {
     const text = rawText.trim();
-    if (!this.nickname || !text || !this.socket) {
+    if (!text) {
+      return;
+    }
+    if (!this.canSend()) {
+      this.status = this.config.ready
+        ? 'DevTalk is still connecting.'
+        : this.config.message;
+      this.postState();
       return;
     }
 
-    const message = {
+    await this.publishMessage({
       id: createId(),
       kind: 'devtalk-message',
       peerId: this.peerId,
       nickname: this.nickname,
       text,
       sentAt: Date.now()
-    };
+    });
+  }
 
-    const buffer = Buffer.from(JSON.stringify(message), 'utf8');
-    for (const address of getSendAddresses()) {
-      this.socket.send(buffer, PORT, address);
+  async uploadFile(file) {
+    if (!this.canSend()) {
+      this.status = this.config.ready
+        ? 'DevTalk is still connecting.'
+        : this.config.message;
+      this.postState();
+      return;
     }
-    this.addMessage({
-      id: message.id,
-      text,
+
+    const name = safeFileName(String(file.name || 'file'));
+    const type = String(file.type || 'application/octet-stream');
+    const size = Number(file.size || 0);
+    const data = String(file.data || '');
+
+    if (!name || !data) {
+      return;
+    }
+    if (size > MAX_FILE_SIZE) {
+      this.status = 'Files must be 5 MB or smaller.';
+      this.postState();
+      return;
+    }
+
+    const buffer = Buffer.from(data, 'base64');
+    if (buffer.byteLength > MAX_FILE_SIZE) {
+      this.status = 'Files must be 5 MB or smaller.';
+      this.postState();
+      return;
+    }
+
+    const objectPath = [
+      this.config.roomId,
+      new Date().toISOString().slice(0, 10),
+      createId() + '-' + name
+    ].join('/');
+
+    this.status = 'Uploading ' + name + '...';
+    this.postState();
+
+    const { error } = await this.supabase.storage
+      .from(this.config.bucket)
+      .upload(objectPath, buffer, {
+        contentType: type,
+        upsert: false
+      });
+
+    if (error) {
+      this.status = 'File upload failed: ' + error.message;
+      this.postState();
+      return;
+    }
+
+    const { data: publicUrlData } = this.supabase.storage
+      .from(this.config.bucket)
+      .getPublicUrl(objectPath);
+
+    await this.publishMessage({
+      id: createId(),
+      kind: 'devtalk-message',
+      peerId: this.peerId,
       nickname: this.nickname,
-      mine: true,
-      sentAt: message.sentAt
+      text: '',
+      attachment: {
+        name,
+        type,
+        size: buffer.byteLength,
+        url: publicUrlData.publicUrl,
+        path: objectPath,
+        isImage: type.startsWith('image/')
+      },
+      sentAt: Date.now()
+    });
+  }
+
+  async publishMessage(message) {
+    const result = await this.channel.send({
+      type: 'broadcast',
+      event: 'message',
+      payload: message
+    });
+
+    if (result !== 'ok') {
+      this.status = 'Message was not sent. Check Supabase Realtime settings.';
+      this.postState();
+      return;
+    }
+
+    this.addMessage({ ...message, mine: true });
+    this.status = 'Connected to DevTalk room ' + this.config.roomId;
+  }
+
+  receiveMessage(payload) {
+    if (!payload || payload.kind !== 'devtalk-message') {
+      return;
+    }
+    if (payload.peerId === this.peerId) {
+      return;
+    }
+
+    const messageId = String(payload.id || '');
+    if (messageId && this.seenMessageIds.has(messageId)) {
+      return;
+    }
+    if (messageId) {
+      this.seenMessageIds.add(messageId);
+    }
+
+    this.addMessage({
+      id: payload.id || createId(),
+      text: String(payload.text || ''),
+      nickname: String(payload.nickname || 'Someone'),
+      attachment: normalizeAttachment(payload.attachment),
+      mine: false,
+      sentAt: Number(payload.sentAt) || Date.now()
     });
   }
 
@@ -245,6 +346,10 @@ class LanChatViewProvider {
     this.postState();
   }
 
+  canSend() {
+    return Boolean(this.nickname && this.channel && this.config.ready);
+  }
+
   postState() {
     if (!this.webviewView) {
       return;
@@ -255,58 +360,13 @@ class LanChatViewProvider {
       nickname: this.nickname,
       status: this.status,
       needsNickname: !this.nickname,
+      canSend: this.canSend(),
+      maxFileSize: MAX_FILE_SIZE,
       unreadCount: this.unreadCount,
       readMarkerMessageId: this.readMarkerMessageId,
       messages: this.messages
     });
   }
-}
-
-function getSendAddresses() {
-  const addresses = new Set([MULTICAST_ADDRESS, GLOBAL_BROADCAST_ADDRESS]);
-
-  for (const entries of Object.values(os.networkInterfaces())) {
-    for (const entry of entries || []) {
-      if (entry.family !== 'IPv4' || entry.internal || !entry.address || !entry.netmask) {
-        continue;
-      }
-
-      const broadcast = getBroadcastAddress(entry.address, entry.netmask);
-      if (broadcast) {
-        addresses.add(broadcast);
-      }
-    }
-  }
-
-  return [...addresses];
-}
-
-function getBroadcastAddress(address, netmask) {
-  const ip = ipv4ToInt(address);
-  const mask = ipv4ToInt(netmask);
-  if (ip === undefined || mask === undefined) {
-    return undefined;
-  }
-
-  return intToIpv4((ip | (~mask >>> 0)) >>> 0);
-}
-
-function ipv4ToInt(value) {
-  const parts = value.split('.').map((part) => Number(part));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-    return undefined;
-  }
-
-  return (((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3]) >>> 0;
-}
-
-function intToIpv4(value) {
-  return [
-    (value >>> 24) & 255,
-    (value >>> 16) & 255,
-    (value >>> 8) & 255,
-    value & 255
-  ].join('.');
 }
 
 function getNickname(context) {
@@ -320,6 +380,64 @@ function getNickname(context) {
   return configuredName || savedName;
 }
 
+function getSupabaseConfig() {
+  const config = vscode.workspace.getConfiguration('devtalk');
+  const url = String(config.get('supabaseUrl', '') || '').trim();
+  const anonKey = String(config.get('supabaseAnonKey', '') || '').trim();
+  const roomId = String(config.get('roomId', DEFAULT_ROOM_ID) || DEFAULT_ROOM_ID).trim();
+  const bucket = String(config.get('storageBucket', DEFAULT_BUCKET) || DEFAULT_BUCKET).trim();
+
+  if (!url || !anonKey) {
+    return {
+      ready: false,
+      message: 'Set devtalk.supabaseUrl and devtalk.supabaseAnonKey to start.',
+      url,
+      anonKey,
+      roomId,
+      bucket
+    };
+  }
+
+  return {
+    ready: true,
+    message: '',
+    url,
+    anonKey,
+    roomId: roomId || DEFAULT_ROOM_ID,
+    bucket: bucket || DEFAULT_BUCKET
+  };
+}
+
+function safeFileName(name) {
+  const cleaned = name
+    .replace(/[/\\?%*:|"<>]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return cleaned.slice(0, 120) || 'file';
+}
+
+function normalizeAttachment(attachment) {
+  if (!attachment || typeof attachment !== 'object') {
+    return undefined;
+  }
+
+  const url = String(attachment.url || '');
+  if (!url) {
+    return undefined;
+  }
+
+  const type = String(attachment.type || 'application/octet-stream');
+  return {
+    name: String(attachment.name || 'file'),
+    type,
+    size: Number(attachment.size || 0),
+    url,
+    path: String(attachment.path || ''),
+    isImage: Boolean(attachment.isImage || type.startsWith('image/'))
+  };
+}
+
 function getWebviewHtml(webview) {
   const nonce = crypto.randomBytes(16).toString('base64');
 
@@ -327,18 +445,12 @@ function getWebviewHtml(webview) {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DevTalk</title>
   <style>
-    :root {
-      color-scheme: light dark;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
     body {
       margin: 0;
       padding: 0;
@@ -347,7 +459,6 @@ function getWebviewHtml(webview) {
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
     }
-
     .setup {
       display: grid;
       align-content: center;
@@ -355,47 +466,21 @@ function getWebviewHtml(webview) {
       height: 100vh;
       padding: 14px;
     }
-
-    .setup[hidden],
-    .chat[hidden] {
-      display: none;
-    }
-
-    .setup-title {
-      font-size: 13px;
-      font-weight: 600;
-      line-height: 1.35;
-    }
-
-    .setup-help {
-      color: var(--vscode-descriptionForeground);
-      font-size: 12px;
-      line-height: 1.45;
-    }
-
-    .setup-form {
-      display: grid;
-      gap: 8px;
-    }
-
+    .setup[hidden], .chat[hidden] { display: none; }
+    .setup-title { font-size: 13px; font-weight: 600; line-height: 1.35; }
+    .setup-help { color: var(--vscode-descriptionForeground); font-size: 12px; line-height: 1.45; }
+    .setup-form { display: grid; gap: 8px; }
     .chat {
       display: grid;
       grid-template-rows: auto 1fr auto;
       height: 100vh;
       min-height: 180px;
     }
-
     .header {
       padding: 10px 10px 8px;
       border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border));
     }
-
-    .title {
-      font-size: 12px;
-      font-weight: 600;
-      line-height: 1.3;
-    }
-
+    .title { font-size: 12px; font-weight: 600; line-height: 1.3; }
     .status {
       margin-top: 3px;
       color: var(--vscode-descriptionForeground);
@@ -403,20 +488,8 @@ function getWebviewHtml(webview) {
       line-height: 1.35;
       overflow-wrap: anywhere;
     }
-
-    .messages {
-      min-height: 0;
-      overflow-y: auto;
-      padding: 10px;
-    }
-
-    .empty {
-      color: var(--vscode-descriptionForeground);
-      font-size: 12px;
-      line-height: 1.45;
-      padding-top: 4px;
-    }
-
+    .messages { min-height: 0; overflow-y: auto; padding: 10px; }
+    .empty { color: var(--vscode-descriptionForeground); font-size: 12px; line-height: 1.45; padding-top: 4px; }
     .read-marker {
       display: grid;
       grid-template-columns: 1fr auto 1fr;
@@ -427,14 +500,11 @@ function getWebviewHtml(webview) {
       font-size: 10px;
       line-height: 1.2;
     }
-
-    .read-marker::before,
-    .read-marker::after {
+    .read-marker::before, .read-marker::after {
       content: '';
       height: 1px;
       background: var(--vscode-panel-border);
     }
-
     .message {
       display: flex;
       flex-direction: column;
@@ -442,11 +512,7 @@ function getWebviewHtml(webview) {
       gap: 3px;
       margin-bottom: 10px;
     }
-
-    .message.mine {
-      align-items: flex-end;
-    }
-
+    .message.mine { align-items: flex-end; }
     .meta {
       max-width: 86%;
       color: var(--vscode-descriptionForeground);
@@ -456,7 +522,6 @@ function getWebviewHtml(webview) {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-
     .bubble {
       max-width: 86%;
       padding: 7px 9px;
@@ -468,24 +533,42 @@ function getWebviewHtml(webview) {
       overflow-wrap: anywhere;
       white-space: pre-wrap;
     }
-
     .mine .bubble {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
       border-color: var(--vscode-button-background);
     }
-
+    .attachment {
+      display: grid;
+      gap: 6px;
+      max-width: 100%;
+    }
+    .attachment img {
+      display: block;
+      max-width: 100%;
+      max-height: 220px;
+      border-radius: 6px;
+      object-fit: contain;
+    }
+    .file-link {
+      color: inherit;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      cursor: pointer;
+    }
+    .file-meta {
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+    }
     .composer {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: auto 1fr auto;
       gap: 6px;
       padding: 8px;
       border-top: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border));
       background: var(--vscode-sideBar-background);
     }
-
-    input,
-    textarea {
+    input, textarea {
       width: 100%;
       min-width: 0;
       height: 34px;
@@ -501,14 +584,9 @@ function getWebviewHtml(webview) {
       font-size: inherit;
       line-height: 1.35;
     }
-
-    input:focus,
-    textarea:focus {
-      border-color: var(--vscode-focusBorder);
-    }
-
+    input:focus, textarea:focus { border-color: var(--vscode-focusBorder); }
     button {
-      min-width: 44px;
+      min-width: 36px;
       height: 34px;
       padding: 0 10px;
       border: 1px solid var(--vscode-button-border, transparent);
@@ -519,16 +597,18 @@ function getWebviewHtml(webview) {
       font-size: 12px;
       cursor: pointer;
     }
-
-    button:hover {
-      background: var(--vscode-button-hoverBackground);
+    button:hover { background: var(--vscode-button-hoverBackground); }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
     }
+    .file-input { display: none; }
   </style>
 </head>
 <body>
   <section id="setup" class="setup" hidden>
     <div class="setup-title">Choose your chat name</div>
-    <div class="setup-help">This name is shown to people on the same Wi-Fi.</div>
+    <div class="setup-help">This name is shown to people in DevTalk.</div>
     <form id="setupForm" class="setup-form">
       <input id="nicknameInput" type="text" maxlength="32" autocomplete="off" placeholder="Name" />
       <button type="submit">Start Chat</button>
@@ -541,8 +621,10 @@ function getWebviewHtml(webview) {
     </header>
     <section id="messages" class="messages" aria-live="polite"></section>
     <form id="composer" class="composer">
+      <button id="attachButton" type="button" title="Attach file">+</button>
       <textarea id="input" rows="1" placeholder="Message"></textarea>
-      <button type="submit">Send</button>
+      <button id="sendButton" type="submit">Send</button>
+      <input id="fileInput" class="file-input" type="file" />
     </form>
   </main>
 
@@ -556,7 +638,11 @@ function getWebviewHtml(webview) {
     const statusEl = document.getElementById('status');
     const form = document.getElementById('composer');
     const input = document.getElementById('input');
+    const sendButton = document.getElementById('sendButton');
+    const attachButton = document.getElementById('attachButton');
+    const fileInput = document.getElementById('fileInput');
     let isComposing = false;
+    let maxFileSize = ${MAX_FILE_SIZE};
 
     function formatTime(value) {
       return new Date(value).toLocaleTimeString([], {
@@ -565,7 +651,44 @@ function getWebviewHtml(webview) {
       });
     }
 
+    function formatSize(value) {
+      if (!value) return '';
+      if (value < 1024 * 1024) return Math.ceil(value / 1024) + ' KB';
+      return (value / 1024 / 1024).toFixed(1) + ' MB';
+    }
+
+    function renderAttachment(attachment) {
+      const wrap = document.createElement('div');
+      wrap.className = 'attachment';
+
+      if (attachment.isImage) {
+        const image = document.createElement('img');
+        image.src = attachment.url;
+        image.alt = attachment.name;
+        wrap.appendChild(image);
+      }
+
+      const link = document.createElement('a');
+      link.className = 'file-link';
+      link.href = attachment.url;
+      link.textContent = attachment.name;
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        vscode.postMessage({ type: 'openExternal', url: attachment.url });
+      });
+      wrap.appendChild(link);
+
+      const meta = document.createElement('div');
+      meta.className = 'file-meta';
+      meta.textContent = [attachment.type, formatSize(attachment.size)].filter(Boolean).join(' · ');
+      wrap.appendChild(meta);
+
+      return wrap;
+    }
+
     function render(state) {
+      maxFileSize = state.maxFileSize || maxFileSize;
+
       if (state.needsNickname) {
         setupEl.hidden = false;
         chatEl.hidden = true;
@@ -576,12 +699,15 @@ function getWebviewHtml(webview) {
       setupEl.hidden = true;
       chatEl.hidden = false;
       statusEl.textContent = state.status || '';
+      input.disabled = !state.canSend;
+      sendButton.disabled = !state.canSend;
+      attachButton.disabled = !state.canSend;
       messagesEl.textContent = '';
 
       if (!state.messages || state.messages.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'empty';
-        empty.textContent = 'Messages from the same Wi-Fi network will appear here.';
+        empty.textContent = 'Messages will appear here once DevTalk is connected.';
         messagesEl.appendChild(empty);
         return;
       }
@@ -603,13 +729,32 @@ function getWebviewHtml(webview) {
 
         const bubble = document.createElement('div');
         bubble.className = 'bubble';
-        bubble.textContent = message.text;
+        if (message.text) {
+          const text = document.createElement('div');
+          text.textContent = message.text;
+          bubble.appendChild(text);
+        }
+        if (message.attachment) {
+          bubble.appendChild(renderAttachment(message.attachment));
+        }
 
         item.append(meta, bubble);
         messagesEl.appendChild(item);
       }
 
       messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function readFileAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = String(reader.result || '');
+          resolve(result.includes(',') ? result.split(',')[1] : result);
+        };
+        reader.onerror = () => reject(reader.error || new Error('File read failed'));
+        reader.readAsDataURL(file);
+      });
     }
 
     setupForm.addEventListener('submit', (event) => {
@@ -631,6 +776,33 @@ function getWebviewHtml(webview) {
       vscode.postMessage({ type: 'send', text });
       input.value = '';
       input.focus();
+    });
+
+    attachButton.addEventListener('click', () => {
+      fileInput.click();
+    });
+
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files && fileInput.files[0];
+      fileInput.value = '';
+      if (!file) {
+        return;
+      }
+      if (file.size > maxFileSize) {
+        statusEl.textContent = 'Files must be 5 MB or smaller.';
+        return;
+      }
+
+      const data = await readFileAsBase64(file);
+      vscode.postMessage({
+        type: 'uploadFile',
+        file: {
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          data
+        }
+      });
     });
 
     input.addEventListener('compositionstart', () => {

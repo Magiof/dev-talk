@@ -2,7 +2,7 @@
   "name": "devtalk",
   "displayName": "DevTalk",
   "description": "A tiny team chat view for VS Code and Cursor.",
-  "version": "0.0.12",
+  "version": "0.1.0",
   "publisher": "magiof",
   "engines": {
     "vscode": "^1.90.0"
@@ -48,6 +48,26 @@
           "type": "string",
           "default": "",
           "description": "Nickname shown in DevTalk. You will be asked for a name on first use when empty."
+        },
+        "devtalk.supabaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Supabase project URL. Do not commit this value to a public repository."
+        },
+        "devtalk.supabaseAnonKey": {
+          "type": "string",
+          "default": "",
+          "description": "Supabase anon public key. Store it in user settings, not in this repository."
+        },
+        "devtalk.roomId": {
+          "type": "string",
+          "default": "general",
+          "description": "DevTalk room/channel id."
+        },
+        "devtalk.storageBucket": {
+          "type": "string",
+          "default": "devtalk-files",
+          "description": "Supabase Storage bucket used for files and images."
         }
       }
     }
@@ -63,5 +83,8 @@
   "bugs": {
     "url": "https://github.com/Magiof/dev-talk/issues"
   },
-  "homepage": "https://github.com/Magiof/dev-talk#readme"
+  "homepage": "https://github.com/Magiof/dev-talk#readme",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.105.3"
+  }
 }
