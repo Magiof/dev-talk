@@ -1,0 +1,58 @@
+{
+  "name": "devtalk",
+  "displayName": "DevTalk",
+  "description": "A tiny team chat view for VS Code and Cursor.",
+  "version": "0.0.12",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:devtalkView"
+  ],
+  "main": "./extension.js",
+  "scripts": {
+    "package": "vsce package",
+    "check": "node --check extension.js"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.2.1"
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "devtalk",
+          "title": "DevTalk",
+          "icon": "media/chat.svg"
+        }
+      ]
+    },
+    "views": {
+      "devtalk": [
+        {
+          "id": "devtalkView",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DevTalk",
+      "properties": {
+        "devtalk.nickname": {
+          "type": "string",
+          "default": "",
+          "description": "Nickname shown in DevTalk. You will be asked for a name on first use when empty."
+        }
+      }
+    }
+  },
+  "extensionKind": [
+    "ui"
+  ]
+}
