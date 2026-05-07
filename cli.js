@@ -205,18 +205,52 @@ function normalizeTheme(value) {
 }
 
 function renderMessage(message, theme = 'default') {
+  for (const line of formatMessage(message, theme)) {
+    console.log(line);
+  }
+}
+
+function formatMessage(message, theme = 'default') {
   const who = message.mine ? 'you' : message.nickname || 'someone';
   const text = message.text ? ' ' + message.text : '';
+  const lines = [];
+
   if (theme === 'work') {
-    console.log(`${formatTime(message.sentAt)} ${who}${text}`);
+    lines.push(`${formatTime(message.sentAt)} ${who}${text}`);
   } else {
-    console.log(`[${formatTime(message.sentAt)}] ${who}:${text}`);
+    lines.push(`[${formatTime(message.sentAt)}] ${who}:${text}`);
   }
 
   if (message.attachment) {
     const meta = [message.attachment.type, formatSize(message.attachment.size)].filter(Boolean).join(' · ');
-    console.log(`  file: ${message.attachment.name}${meta ? ' (' + meta + ')' : ''}`);
-    console.log(`  url: ${message.attachment.url}`);
+    lines.push(`  file: ${message.attachment.name}${meta ? ' (' + meta + ')' : ''}`);
+    lines.push(`  url: ${message.attachment.url}`);
+  }
+
+  return lines;
+}
+
+function renderMessageAbovePrompt(rl, message, theme = 'default') {
+  if (!process.stdout.isTTY) {
+    renderMessage(message, theme);
+    rl.prompt();
+    return;
+  }
+
+  const currentLine = rl.line;
+  const currentCursor = rl.cursor;
+
+  readline.clearLine(process.stdout, 0);
+  readline.cursorTo(process.stdout, 0);
+  for (const line of formatMessage(message, theme)) {
+    console.log(line);
+  }
+  rl.prompt(true);
+  if (currentLine) {
+    rl.write(currentLine);
+    if (currentCursor < currentLine.length) {
+      readline.moveCursor(process.stdout, currentCursor - currentLine.length, 0);
+    }
   }
 }
 
@@ -262,7 +296,7 @@ async function main() {
     if (payload.id) {
       seen.add(payload.id);
     }
-    renderMessage({
+    renderMessageAbovePrompt(rl, {
       id: payload.id || createId(),
       nickname: String(payload.nickname || 'someone'),
       text: String(payload.text || ''),
@@ -270,7 +304,6 @@ async function main() {
       sentAt: Number(payload.sentAt) || Date.now(),
       mine: false
     }, config.theme);
-    rl.prompt();
   });
 
   channel.subscribe((status) => {
@@ -287,6 +320,10 @@ async function main() {
   });
 
   async function publish(message) {
+    if (message.id) {
+      seen.add(message.id);
+    }
+
     const result = await channel.send({
       type: 'broadcast',
       event: 'message',
