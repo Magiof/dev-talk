@@ -17,6 +17,18 @@ const ROOM_ID = 'general';
 const CONFIG_DIR = path.join(os.homedir(), '.devtalk');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const peerId = createId();
+const SPEAKER_COLORS = [
+  [255, 226, 230],
+  [255, 239, 199],
+  [242, 245, 181],
+  [213, 245, 204],
+  [201, 244, 232],
+  [199, 235, 255],
+  [218, 224, 255],
+  [236, 218, 255],
+  [255, 218, 242],
+  [224, 224, 224]
+];
 
 function createId() {
   return typeof crypto.randomUUID === 'function'
@@ -51,7 +63,8 @@ function getConfig(saved = {}) {
     anonKey: getArg('key') || process.env.DEVTALK_SUPABASE_ANON_KEY || saved.anonKey || '',
     bucket: getArg('bucket') || process.env.DEVTALK_STORAGE_BUCKET || saved.bucket || DEFAULT_BUCKET,
     nickname: getArg('name') || process.env.DEVTALK_NICKNAME || saved.nickname || os.userInfo().username || os.hostname() || 'terminal',
-    theme: getArg('theme') || process.env.DEVTALK_THEME || saved.theme || 'default'
+    theme: getArg('theme') || process.env.DEVTALK_THEME || saved.theme || 'default',
+    colorMode: normalizeColorMode(getArg('color-mode') || process.env.DEVTALK_COLOR_MODE || saved.colorMode, true)
   };
 }
 
@@ -96,6 +109,7 @@ async function ensureConfig() {
     config.bucket = await ask(rl, 'Storage bucket', config.bucket || DEFAULT_BUCKET);
     config.nickname = await ask(rl, 'Nickname', config.nickname || 'terminal');
     config.theme = normalizeTheme(await ask(rl, 'Theme', config.theme || 'default'));
+    config.colorMode = normalizeColorMode(await ask(rl, 'Color mode', config.colorMode ? 'on' : 'off'), true);
   } finally {
     rl.close();
   }
@@ -130,6 +144,7 @@ async function promptConfig(config) {
     config.bucket = await ask(rl, 'Storage bucket', config.bucket || DEFAULT_BUCKET);
     config.nickname = await ask(rl, 'Nickname', config.nickname || 'terminal');
     config.theme = normalizeTheme(await ask(rl, 'Theme', config.theme || 'default'));
+    config.colorMode = normalizeColorMode(await ask(rl, 'Color mode', config.colorMode ? 'on' : 'off'), true);
   } finally {
     rl.close();
   }
@@ -139,7 +154,7 @@ function getHelpLines() {
   return [
     'DevTalk terminal',
     '',
-    'Usage: devtalk [--url <supabase-url>] [--key <anon-key>] [--bucket devtalk-files] [--name you] [--theme default|work]',
+    'Usage: devtalk [--url <supabase-url>] [--key <anon-key>] [--bucket devtalk-files] [--name you] [--theme default|work] [--color-mode on|off]',
     '       devtalk /config',
     '       devtalk --config',
     '',
@@ -152,10 +167,12 @@ function getHelpLines() {
     '  DEVTALK_STORAGE_BUCKET',
     '  DEVTALK_NICKNAME',
     '  DEVTALK_THEME',
+    '  DEVTALK_COLOR_MODE',
     '',
     'Commands:',
     '  /file <path>   upload a file up to 5 MB',
     '  /theme [name]  switch default/work terminal output',
+    '  /color-mode    toggle speaker pastel highlights',
     '  /config        edit saved terminal settings',
     '  /help          show this help',
     '  /quit          exit'
@@ -212,13 +229,31 @@ function normalizeTheme(value) {
   return value === 'work' ? 'work' : 'default';
 }
 
+function normalizeColorMode(value, defaultValue = true) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (value === undefined || value === null || value === '') {
+    return defaultValue;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y', 'on', 'color', 'colors'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'n', 'off', 'plain'].includes(normalized)) {
+    return false;
+  }
+  return defaultValue;
+}
+
 function renderMessage(message, theme = 'default') {
   for (const line of formatMessage(message, theme)) {
     console.log(line);
   }
 }
 
-function formatMessage(message, theme = 'default') {
+function formatMessage(message, theme = 'default', options = {}) {
   const who = message.mine ? 'you' : message.nickname || 'someone';
   const text = message.text ? ' ' + message.text : '';
   const lines = [];
@@ -235,7 +270,30 @@ function formatMessage(message, theme = 'default') {
     lines.push(`  url: ${message.attachment.url}`);
   }
 
-  return lines;
+  if (!options.colorMode || !process.stdout.isTTY) {
+    return lines;
+  }
+
+  return colorizeMessageLines(lines, message);
+}
+
+function speakerIndex(message) {
+  const key = message.peerId || message.nickname || (message.mine ? 'you' : 'someone');
+  let hash = 0;
+  for (let index = 0; index < key.length; index += 1) {
+    hash = ((hash << 5) - hash + key.charCodeAt(index)) | 0;
+  }
+
+  return Math.abs(hash) % SPEAKER_COLORS.length;
+}
+
+function colorizeMessageLines(lines, message) {
+  const [red, green, blue] = SPEAKER_COLORS[speakerIndex(message)];
+  const bg = `\x1b[48;2;${red};${green};${blue}m`;
+  const fg = '\x1b[38;2;30;30;30m';
+  const reset = '\x1b[0m';
+
+  return lines.map((line) => `${bg}${fg} ${line} ${reset}`);
 }
 
 function createChatUi({ onLine, onClose }) {
@@ -449,6 +507,7 @@ async function main() {
 
   const config = await ensureConfig();
   config.theme = normalizeTheme(config.theme);
+  config.colorMode = normalizeColorMode(config.colorMode, true);
 
   const supabase = createClient(config.url, config.anonKey, {
     auth: {
@@ -493,12 +552,13 @@ async function main() {
     }
     writeLines(formatMessage({
       id: payload.id || createId(),
+      peerId: String(payload.peerId || ''),
       nickname: String(payload.nickname || 'someone'),
       text: String(payload.text || ''),
       attachment: payload.attachment,
       sentAt: Number(payload.sentAt) || Date.now(),
       mine: false
-    }, config.theme));
+    }, config.theme, { colorMode: config.colorMode }));
   });
 
   channel.subscribe((status) => {
@@ -531,7 +591,7 @@ async function main() {
       return;
     }
 
-    writeLines(formatMessage({ ...message, mine: true }, config.theme));
+    writeLines(formatMessage({ ...message, mine: true }, config.theme, { colorMode: config.colorMode }));
   }
 
   async function editConfig() {
@@ -558,6 +618,17 @@ async function main() {
     config.theme = nextTheme;
     await saveConfig(config);
     writeLines(['Theme changed to ' + nextTheme + '.']);
+  }
+
+  async function toggleColorMode(value) {
+    if (value) {
+      config.colorMode = normalizeColorMode(value, config.colorMode);
+    } else {
+      config.colorMode = !config.colorMode;
+    }
+
+    await saveConfig(config);
+    writeLines(['Color mode ' + (config.colorMode ? 'on' : 'off') + '.']);
   }
 
   async function sendText(text) {
@@ -646,6 +717,10 @@ async function main() {
     }
     if (text === '/theme' || text.startsWith('/theme ')) {
       await setTheme(text.slice('/theme'.length).trim());
+      return;
+    }
+    if (text === '/color-mode' || text.startsWith('/color-mode ')) {
+      await toggleColorMode(text.slice('/color-mode'.length).trim());
       return;
     }
     if (!ready) {

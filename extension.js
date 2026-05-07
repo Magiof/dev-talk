@@ -222,12 +222,16 @@ class DevTalkViewProvider {
       await this.setThemeCommand(value);
       return;
     }
+    if (command === 'color-mode') {
+      await this.setColorModeCommand(value);
+      return;
+    }
     if (command === 'config') {
       await this.configureSettings();
       return;
     }
     if (command === 'help') {
-      this.status = 'Commands: /theme [default|work], /config';
+      this.status = 'Commands: /theme [default|work], /color-mode, /config';
       this.postState();
       return;
     }
@@ -249,6 +253,17 @@ class DevTalkViewProvider {
       .getConfiguration('devtalk')
       .update('theme', nextTheme, vscode.ConfigurationTarget.Global);
     this.status = 'Theme changed to ' + nextTheme + '.';
+    this.postState();
+  }
+
+  async setColorModeCommand(value) {
+    const current = getColorMode();
+    const nextValue = value ? normalizeColorMode(value, current) : !current;
+
+    await vscode.workspace
+      .getConfiguration('devtalk')
+      .update('colorMode', nextValue, vscode.ConfigurationTarget.Global);
+    this.status = 'Color mode ' + (nextValue ? 'on' : 'off') + '.';
     this.postState();
   }
 
@@ -476,6 +491,7 @@ class DevTalkViewProvider {
       canSend: this.canSend(),
       maxFileSize: MAX_FILE_SIZE,
       theme: getTheme(),
+      colorMode: getColorMode(),
       unreadCount: this.unreadCount,
       readMarkerMessageId: this.readMarkerMessageId,
       messages: this.messages
@@ -500,6 +516,23 @@ function getTheme() {
     .get('theme', 'default');
 
   return theme === 'work' ? 'work' : 'default';
+}
+
+function getColorMode() {
+  return Boolean(vscode.workspace
+    .getConfiguration('devtalk')
+    .get('colorMode', true));
+}
+
+function normalizeColorMode(value, defaultValue = true) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y', 'on', 'color', 'colors'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'n', 'off', 'plain'].includes(normalized)) {
+    return false;
+  }
+  return defaultValue;
 }
 
 function getSupabaseConfig() {
@@ -758,6 +791,21 @@ function getWebviewHtml(webview) {
       border-color: transparent;
       box-shadow: none;
     }
+    .color-mode.theme-work .bubble {
+      padding: 2px 5px;
+      border: 0;
+      border-left: 3px solid var(--speaker-border);
+      background: var(--speaker-bg);
+      color: var(--vscode-foreground);
+      box-shadow: none;
+    }
+    .color-mode.theme-work .mine .bubble {
+      border-left: 0;
+      border-right: 3px solid var(--speaker-border);
+      background: var(--speaker-bg);
+      color: var(--vscode-foreground);
+      box-shadow: none;
+    }
     .theme-work .attachment { gap: 3px; }
     .theme-work .attachment img {
       max-height: 140px;
@@ -822,6 +870,18 @@ function getWebviewHtml(webview) {
     const sendButton = document.getElementById('sendButton');
     const attachButton = document.getElementById('attachButton');
     const fileInput = document.getElementById('fileInput');
+    const speakerPalette = [
+      ['rgb(255 226 230 / 0.56)', 'rgb(248 134 149 / 0.82)'],
+      ['rgb(255 239 199 / 0.58)', 'rgb(235 174 77 / 0.82)'],
+      ['rgb(242 245 181 / 0.58)', 'rgb(185 191 73 / 0.82)'],
+      ['rgb(213 245 204 / 0.56)', 'rgb(117 195 93 / 0.82)'],
+      ['rgb(201 244 232 / 0.56)', 'rgb(83 190 161 / 0.82)'],
+      ['rgb(199 235 255 / 0.56)', 'rgb(75 166 215 / 0.82)'],
+      ['rgb(218 224 255 / 0.56)', 'rgb(122 139 222 / 0.82)'],
+      ['rgb(236 218 255 / 0.56)', 'rgb(165 117 222 / 0.82)'],
+      ['rgb(255 218 242 / 0.56)', 'rgb(221 115 184 / 0.82)'],
+      ['rgb(224 224 224 / 0.56)', 'rgb(153 153 153 / 0.82)']
+    ];
     let isComposing = false;
     let maxFileSize = ${MAX_FILE_SIZE};
 
@@ -845,10 +905,10 @@ function getWebviewHtml(webview) {
         hash = ((hash << 5) - hash + key.charCodeAt(index)) | 0;
       }
 
-      const hue = Math.abs(hash) % 360;
+      const colors = speakerPalette[Math.abs(hash) % speakerPalette.length];
       return {
-        background: 'hsl(' + hue + ' 88% 82% / 0.34)',
-        border: 'hsl(' + hue + ' 82% 64% / 0.72)'
+        background: colors[0],
+        border: colors[1]
       };
     }
 
@@ -884,6 +944,7 @@ function getWebviewHtml(webview) {
     function render(state) {
       maxFileSize = state.maxFileSize || maxFileSize;
       document.body.classList.toggle('theme-work', state.theme === 'work');
+      document.body.classList.toggle('color-mode', Boolean(state.colorMode));
 
       if (state.needsNickname) {
         setupEl.hidden = false;
@@ -925,9 +986,11 @@ function getWebviewHtml(webview) {
 
         const bubble = document.createElement('div');
         bubble.className = 'bubble';
-        const colors = speakerColors(message, state);
-        bubble.style.setProperty('--speaker-bg', colors.background);
-        bubble.style.setProperty('--speaker-border', colors.border);
+        if (state.colorMode) {
+          const colors = speakerColors(message, state);
+          bubble.style.setProperty('--speaker-bg', colors.background);
+          bubble.style.setProperty('--speaker-border', colors.border);
+        }
         if (message.text) {
           const text = document.createElement('div');
           text.textContent = message.text;

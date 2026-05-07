@@ -74,6 +74,11 @@
           ],
           "default": "default",
           "description": "DevTalk visual theme. Use work for a quieter, denser chat view."
+        },
+        "devtalk.colorMode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Highlight each speaker with one of 10 pastel colors."
         }
       }
     }

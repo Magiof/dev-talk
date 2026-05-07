@@ -18,6 +18,7 @@ DevTalk is a small team chat view for VS Code and Cursor. It lives in the activi
 - Image and animated GIF previews
 - 5 MB file size limit
 - Default and work visual themes
+- Optional per-speaker pastel highlight mode
 - Terminal client for the same Supabase room
 
 ## Supabase Setup
@@ -85,7 +86,7 @@ Set these in VS Code/Cursor user settings. Do not commit real values.
 }
 ```
 
-Use `"devtalk.theme": "work"` for a quieter, denser view that looks more like work logs than chat. You can also type `/theme` or `/theme work` in DevTalk to switch themes. Type `/config` to edit nickname and Supabase settings from the chat view.
+Use `"devtalk.theme": "work"` for a quieter, denser view that looks more like work logs than chat. You can also type `/theme` or `/theme work` in DevTalk to switch themes. Type `/color-mode` to toggle per-speaker pastel highlights, and `/config` to edit nickname and Supabase settings from the chat view.
 
 To use a fixed nickname without the first-run prompt, also set:
 
@@ -119,6 +120,7 @@ Terminal commands:
 
 ```text
 /theme [default|work]
+/color-mode
 /config
 /file ./image.gif
 /help
