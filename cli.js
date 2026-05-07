@@ -64,6 +64,15 @@ function ask(rl, question, defaultValue = '') {
   });
 }
 
+function askSensitive(rl, question, defaultValue = '') {
+  const suffix = defaultValue ? ' [saved]' : '';
+  return new Promise((resolve) => {
+    rl.question(question + suffix + ': ', (answer) => {
+      resolve(answer.trim() || defaultValue);
+    });
+  });
+}
+
 async function ensureConfig() {
   const saved = loadSavedConfig();
   const config = getConfig(saved);
@@ -83,7 +92,7 @@ async function ensureConfig() {
 
   try {
     config.url = config.url || await ask(rl, 'Supabase URL');
-    config.anonKey = config.anonKey || await ask(rl, 'Supabase anon key');
+    config.anonKey = config.anonKey || await askSensitive(rl, 'Supabase anon key');
     config.bucket = await ask(rl, 'Storage bucket', config.bucket || DEFAULT_BUCKET);
     config.nickname = await ask(rl, 'Nickname', config.nickname || 'terminal');
     config.theme = normalizeTheme(await ask(rl, 'Theme', config.theme || 'default'));
@@ -101,10 +110,37 @@ async function ensureConfig() {
   return config;
 }
 
+async function editSavedConfig() {
+  const saved = loadSavedConfig();
+  const config = getConfig(saved);
+  await promptConfig(config);
+  await saveConfig(config);
+  console.log('Saved DevTalk terminal settings.');
+}
+
+async function promptConfig(config) {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  try {
+    config.url = await ask(rl, 'Supabase URL', config.url);
+    config.anonKey = await askSensitive(rl, 'Supabase anon key', config.anonKey);
+    config.bucket = await ask(rl, 'Storage bucket', config.bucket || DEFAULT_BUCKET);
+    config.nickname = await ask(rl, 'Nickname', config.nickname || 'terminal');
+    config.theme = normalizeTheme(await ask(rl, 'Theme', config.theme || 'default'));
+  } finally {
+    rl.close();
+  }
+}
+
 function printHelp() {
   console.log('DevTalk terminal');
   console.log('');
   console.log('Usage: devtalk [--url <supabase-url>] [--key <anon-key>] [--bucket devtalk-files] [--name you] [--theme default|work]');
+  console.log('       devtalk /config');
+  console.log('       devtalk --config');
   console.log('');
   console.log('Settings are saved at ' + CONFIG_PATH + ' after first setup.');
   console.log('CLI arguments and environment variables override saved settings.');
@@ -189,6 +225,10 @@ async function main() {
     printHelp();
     return;
   }
+  if (process.argv.includes('/config') || process.argv.includes('--config')) {
+    await editSavedConfig();
+    return;
+  }
 
   const config = await ensureConfig();
   config.theme = normalizeTheme(config.theme);
@@ -262,21 +302,7 @@ async function main() {
   }
 
   async function editConfig() {
-    const configRl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
-
-    try {
-      config.url = await ask(configRl, 'Supabase URL', config.url);
-      config.anonKey = await ask(configRl, 'Supabase anon key', config.anonKey);
-      config.bucket = await ask(configRl, 'Storage bucket', config.bucket || DEFAULT_BUCKET);
-      config.nickname = await ask(configRl, 'Nickname', config.nickname || 'terminal');
-      config.theme = normalizeTheme(await ask(configRl, 'Theme', config.theme || 'default'));
-    } finally {
-      configRl.close();
-    }
-
+    await promptConfig(config);
     await saveConfig(config);
     console.log('Saved DevTalk terminal settings. Restart DevTalk if URL or key changed.');
   }
