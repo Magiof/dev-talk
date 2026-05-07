@@ -16,6 +16,7 @@ DevTalk is a small team chat view for VS Code and Cursor. It lives in the activi
 - Image and animated GIF previews
 - 5 MB file size limit
 - Default and work visual themes
+- Terminal client for the same Supabase room
 
 ## Supabase Setup
 
@@ -85,6 +86,34 @@ To use a fixed nickname without the first-run prompt, also set:
   "devtalk.nickname": "your-name"
 }
 ```
+
+## Terminal
+
+DevTalk can also run in a terminal against the same Supabase room. Keep real values in environment variables or your shell profile, not in Git.
+
+```bash
+export DEVTALK_SUPABASE_URL="https://your-project.supabase.co"
+export DEVTALK_SUPABASE_ANON_KEY="your-anon-key"
+export DEVTALK_ROOM_ID="general"
+export DEVTALK_NICKNAME="your-name"
+npm run cli
+```
+
+After packaging or installing the package, you can also run:
+
+```bash
+devtalk --room general --name your-name
+```
+
+Terminal commands:
+
+```text
+/file ./image.gif
+/help
+/quit
+```
+
+Files are limited to 5 MB. GIFs and images sent from the terminal appear as previews in the VS Code/Cursor view.
 
 ## Development
 
