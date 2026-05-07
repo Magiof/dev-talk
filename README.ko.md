@@ -49,6 +49,13 @@ with check (
 
 ## 설치
 
+터미널 CLI는 npm으로 전역 설치할 수 있습니다.
+
+```bash
+npm install -g @magiof/devtalk
+dev-talk
+```
+
 GitHub Releases에서 최신 VSIX 파일을 내려받은 뒤 VS Code에서 설치합니다.
 
 1. Extensions 열기
@@ -66,7 +73,7 @@ Extensions: Install from VSIX...
 해당 명령이 보이지 않으면 터미널에서 설치할 수 있습니다.
 
 ```bash
-cursor --install-extension devtalk-0.1.3.vsix
+cursor --install-extension devtalk-0.1.6.vsix
 ```
 
 ## 설정

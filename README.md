@@ -45,6 +45,13 @@ The extension enforces a 5 MB file limit before upload. Keep Supabase keys out o
 
 ## Install
 
+For the terminal CLI, install DevTalk from npm:
+
+```bash
+npm install -g @magiof/devtalk
+dev-talk
+```
+
 Download the latest VSIX from GitHub Releases, then install it in VS Code:
 
 1. Open Extensions
@@ -62,7 +69,7 @@ Extensions: Install from VSIX...
 If that command is not visible, install from a terminal:
 
 ```bash
-cursor --install-extension devtalk-0.1.0.vsix
+cursor --install-extension devtalk-0.1.6.vsix
 ```
 
 ## Settings
