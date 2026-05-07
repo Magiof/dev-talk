@@ -2,7 +2,7 @@
   "name": "devtalk",
   "displayName": "DevTalk",
   "description": "A tiny team chat view for VS Code and Cursor.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "magiof",
   "engines": {
     "vscode": "^1.90.0"
@@ -59,11 +59,6 @@
           "type": "string",
           "default": "",
           "description": "Supabase anon public key. Store it in user settings, not in this repository."
-        },
-        "devtalk.roomId": {
-          "type": "string",
-          "default": "general",
-          "description": "DevTalk room/channel id."
         },
         "devtalk.storageBucket": {
           "type": "string",

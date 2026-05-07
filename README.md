@@ -22,9 +22,9 @@ DevTalk is a small team chat view for VS Code and Cursor. It lives in the activi
 
 ## Supabase Setup
 
-Create a Supabase project, then create a public Storage bucket named `devtalk-files`.
+Create a Supabase project, then create a public Storage bucket. `devtalk-files` is the default name, but you can choose another bucket name and enter it in DevTalk settings.
 
-Recommended bucket policy for a small private friend group:
+Recommended bucket policy for a small private friend group. Replace `devtalk-files` if you chose a different bucket name:
 
 ```sql
 create policy "DevTalk public read"
@@ -73,7 +73,6 @@ Set these in VS Code/Cursor user settings. Do not commit real values.
 {
   "devtalk.supabaseUrl": "https://your-project.supabase.co",
   "devtalk.supabaseAnonKey": "your-anon-key",
-  "devtalk.roomId": "general",
   "devtalk.storageBucket": "devtalk-files",
   "devtalk.theme": "default"
 }
@@ -103,10 +102,10 @@ After packaging or installing the package, you can also run:
 devtalk
 ```
 
-CLI arguments and environment variables override saved settings:
+DevTalk uses one shared room internally. CLI arguments and environment variables override saved settings:
 
 ```bash
-devtalk --room general --name your-name
+devtalk --bucket devtalk-files --name your-name
 ```
 
 Terminal commands:

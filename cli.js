@@ -8,7 +8,7 @@ const { createClient } = require('@supabase/supabase-js');
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const DEFAULT_BUCKET = 'devtalk-files';
-const DEFAULT_ROOM_ID = 'general';
+const ROOM_ID = 'general';
 const CONFIG_DIR = path.join(os.homedir(), '.devtalk');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const peerId = createId();
@@ -44,7 +44,6 @@ function getConfig(saved = {}) {
   return {
     url: getArg('url') || process.env.DEVTALK_SUPABASE_URL || saved.url || '',
     anonKey: getArg('key') || process.env.DEVTALK_SUPABASE_ANON_KEY || saved.anonKey || '',
-    roomId: getArg('room') || process.env.DEVTALK_ROOM_ID || saved.roomId || DEFAULT_ROOM_ID,
     bucket: getArg('bucket') || process.env.DEVTALK_STORAGE_BUCKET || saved.bucket || DEFAULT_BUCKET,
     nickname: getArg('name') || process.env.DEVTALK_NICKNAME || saved.nickname || os.userInfo().username || os.hostname() || 'terminal'
   };
@@ -79,7 +78,6 @@ async function ensureConfig() {
   try {
     config.url = config.url || await ask(rl, 'Supabase URL');
     config.anonKey = config.anonKey || await ask(rl, 'Supabase anon key');
-    config.roomId = await ask(rl, 'Room id', config.roomId || DEFAULT_ROOM_ID);
     config.bucket = await ask(rl, 'Storage bucket', config.bucket || DEFAULT_BUCKET);
     config.nickname = await ask(rl, 'Nickname', config.nickname || 'terminal');
   } finally {
@@ -99,7 +97,7 @@ async function ensureConfig() {
 function printHelp() {
   console.log('DevTalk terminal');
   console.log('');
-  console.log('Usage: devtalk [--url <supabase-url>] [--key <anon-key>] [--room general] [--name you]');
+  console.log('Usage: devtalk [--url <supabase-url>] [--key <anon-key>] [--bucket devtalk-files] [--name you]');
   console.log('');
   console.log('Settings are saved at ' + CONFIG_PATH + ' after first setup.');
   console.log('CLI arguments and environment variables override saved settings.');
@@ -107,7 +105,6 @@ function printHelp() {
   console.log('Environment variables:');
   console.log('  DEVTALK_SUPABASE_URL');
   console.log('  DEVTALK_SUPABASE_ANON_KEY');
-  console.log('  DEVTALK_ROOM_ID');
   console.log('  DEVTALK_STORAGE_BUCKET');
   console.log('  DEVTALK_NICKNAME');
   console.log('');
@@ -185,7 +182,7 @@ async function main() {
     }
   });
 
-  const channel = supabase.channel('devtalk:' + config.roomId, {
+  const channel = supabase.channel('devtalk:' + ROOM_ID, {
     config: {
       broadcast: {
         self: false
@@ -220,7 +217,7 @@ async function main() {
   channel.subscribe((status) => {
     if (status === 'SUBSCRIBED') {
       ready = true;
-      console.log(`Connected to DevTalk room ${config.roomId} as ${config.nickname}.`);
+      console.log(`Connected to DevTalk room ${ROOM_ID} as ${config.nickname}.`);
       console.log('Type /help for commands.');
       rl.prompt();
       return;
@@ -271,7 +268,7 @@ async function main() {
     const name = safeFileName(path.basename(filePath));
     const type = guessContentType(filePath);
     const objectPath = [
-      config.roomId,
+      ROOM_ID,
       new Date().toISOString().slice(0, 10),
       createId() + '-' + name
     ].join('/');

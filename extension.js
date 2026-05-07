@@ -4,7 +4,7 @@ const { createClient } = require('@supabase/supabase-js');
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const DEFAULT_BUCKET = 'devtalk-files';
-const DEFAULT_ROOM_ID = 'general';
+const ROOM_ID = 'general';
 
 function activate(context) {
   const provider = new DevTalkViewProvider(context);
@@ -141,7 +141,7 @@ class DevTalkViewProvider {
       }
     });
 
-    this.channel = this.supabase.channel('devtalk:' + this.config.roomId, {
+    this.channel = this.supabase.channel('devtalk:' + ROOM_ID, {
       config: {
         broadcast: {
           self: false
@@ -155,7 +155,7 @@ class DevTalkViewProvider {
 
     this.channel.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
-        this.status = 'Connected to DevTalk room ' + this.config.roomId;
+        this.status = 'Connected to DevTalk room ' + ROOM_ID;
       } else if (status === 'CHANNEL_ERROR') {
         this.status = 'DevTalk connection failed. Check Supabase settings.';
       } else if (status === 'TIMED_OUT') {
@@ -236,7 +236,7 @@ class DevTalkViewProvider {
     }
 
     const objectPath = [
-      this.config.roomId,
+      ROOM_ID,
       new Date().toISOString().slice(0, 10),
       createId() + '-' + name
     ].join('/');
@@ -293,7 +293,7 @@ class DevTalkViewProvider {
     }
 
     this.addMessage({ ...message, mine: true });
-    this.status = 'Connected to DevTalk room ' + this.config.roomId;
+    this.status = 'Connected to DevTalk room ' + ROOM_ID;
   }
 
   receiveMessage(payload) {
@@ -393,7 +393,6 @@ function getSupabaseConfig() {
   const config = vscode.workspace.getConfiguration('devtalk');
   const url = String(config.get('supabaseUrl', '') || '').trim();
   const anonKey = String(config.get('supabaseAnonKey', '') || '').trim();
-  const roomId = String(config.get('roomId', DEFAULT_ROOM_ID) || DEFAULT_ROOM_ID).trim();
   const bucket = String(config.get('storageBucket', DEFAULT_BUCKET) || DEFAULT_BUCKET).trim();
 
   if (!url || !anonKey) {
@@ -402,7 +401,6 @@ function getSupabaseConfig() {
       message: 'Set devtalk.supabaseUrl and devtalk.supabaseAnonKey to start.',
       url,
       anonKey,
-      roomId,
       bucket
     };
   }
@@ -412,7 +410,6 @@ function getSupabaseConfig() {
     message: '',
     url,
     anonKey,
-    roomId: roomId || DEFAULT_ROOM_ID,
     bucket: bucket || DEFAULT_BUCKET
   };
 }
