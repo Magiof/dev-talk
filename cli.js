@@ -135,29 +135,37 @@ async function promptConfig(config) {
   }
 }
 
+function getHelpLines() {
+  return [
+    'DevTalk terminal',
+    '',
+    'Usage: devtalk [--url <supabase-url>] [--key <anon-key>] [--bucket devtalk-files] [--name you] [--theme default|work]',
+    '       devtalk /config',
+    '       devtalk --config',
+    '',
+    'Settings are saved at ' + CONFIG_PATH + ' after first setup.',
+    'CLI arguments and environment variables override saved settings.',
+    '',
+    'Environment variables:',
+    '  DEVTALK_SUPABASE_URL',
+    '  DEVTALK_SUPABASE_ANON_KEY',
+    '  DEVTALK_STORAGE_BUCKET',
+    '  DEVTALK_NICKNAME',
+    '  DEVTALK_THEME',
+    '',
+    'Commands:',
+    '  /file <path>   upload a file up to 5 MB',
+    '  /theme [name]  switch default/work terminal output',
+    '  /config        edit saved terminal settings',
+    '  /help          show this help',
+    '  /quit          exit'
+  ];
+}
+
 function printHelp() {
-  console.log('DevTalk terminal');
-  console.log('');
-  console.log('Usage: devtalk [--url <supabase-url>] [--key <anon-key>] [--bucket devtalk-files] [--name you] [--theme default|work]');
-  console.log('       devtalk /config');
-  console.log('       devtalk --config');
-  console.log('');
-  console.log('Settings are saved at ' + CONFIG_PATH + ' after first setup.');
-  console.log('CLI arguments and environment variables override saved settings.');
-  console.log('');
-  console.log('Environment variables:');
-  console.log('  DEVTALK_SUPABASE_URL');
-  console.log('  DEVTALK_SUPABASE_ANON_KEY');
-  console.log('  DEVTALK_STORAGE_BUCKET');
-  console.log('  DEVTALK_NICKNAME');
-  console.log('  DEVTALK_THEME');
-  console.log('');
-  console.log('Commands:');
-  console.log('  /file <path>   upload a file up to 5 MB');
-  console.log('  /theme [name]  switch default/work terminal output');
-  console.log('  /config        edit saved terminal settings');
-  console.log('  /help          show this help');
-  console.log('  /quit          exit');
+  for (const line of getHelpLines()) {
+    console.log(line);
+  }
 }
 
 function safeFileName(name) {
@@ -230,28 +238,203 @@ function formatMessage(message, theme = 'default') {
   return lines;
 }
 
-function renderMessageAbovePrompt(rl, message, theme = 'default') {
-  if (!process.stdout.isTTY) {
-    renderMessage(message, theme);
-    rl.prompt();
-    return;
+function createChatUi({ onLine, onClose }) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      prompt: '> '
+    });
+
+    rl.on('line', async (line) => {
+      await onLine(line);
+      rl.prompt();
+    });
+    rl.on('close', onClose);
+
+    return {
+      start() {
+        rl.prompt();
+      },
+      writeLines(lines) {
+        for (const line of lines) {
+          console.log(line);
+        }
+        rl.prompt();
+      },
+      close() {
+        rl.close();
+      }
+    };
   }
 
-  const currentLine = rl.line;
-  const currentCursor = rl.cursor;
+  let input = '';
+  let cursor = 0;
+  let closed = false;
+  let lastInterruptAt = 0;
+  let handling = Promise.resolve();
 
-  readline.clearLine(process.stdout, 0);
-  readline.cursorTo(process.stdout, 0);
-  for (const line of formatMessage(message, theme)) {
-    console.log(line);
+  readline.emitKeypressEvents(process.stdin);
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+
+  function divider() {
+    return '─'.repeat(Math.max(20, process.stdout.columns || 80));
   }
-  rl.prompt(true);
-  if (currentLine) {
-    rl.write(currentLine);
-    if (currentCursor < currentLine.length) {
-      readline.moveCursor(process.stdout, currentCursor - currentLine.length, 0);
+
+  function drawInputBlock() {
+    process.stdout.write(divider() + '\n');
+    process.stdout.write('> ' + input);
+    moveCursorToInputPosition();
+  }
+
+  function clearInputBlock() {
+    readline.cursorTo(process.stdout, 0);
+    readline.clearLine(process.stdout, 0);
+    readline.moveCursor(process.stdout, 0, -1);
+    readline.cursorTo(process.stdout, 0);
+    readline.clearLine(process.stdout, 0);
+  }
+
+  function moveCursorToInputPosition() {
+    const offset = input.length - cursor;
+    if (offset > 0) {
+      readline.moveCursor(process.stdout, -offset, 0);
     }
   }
+
+  function redrawInputLine() {
+    readline.cursorTo(process.stdout, 0);
+    readline.clearLine(process.stdout, 0);
+    process.stdout.write('> ' + input);
+    moveCursorToInputPosition();
+  }
+
+  function writeLines(lines) {
+    if (closed) {
+      return;
+    }
+
+    clearInputBlock();
+    for (const line of lines) {
+      console.log(line);
+    }
+    drawInputBlock();
+  }
+
+  function submitInput() {
+    const line = input;
+    input = '';
+    cursor = 0;
+    clearInputBlock();
+    drawInputBlock();
+
+    handling = handling
+      .then(() => onLine(line))
+      .catch((error) => writeLines([error.message]))
+      .then(() => {
+        if (!closed) {
+          redrawInputLine();
+        }
+      });
+  }
+
+  function close() {
+    if (closed) {
+      return;
+    }
+
+    closed = true;
+    process.stdin.setRawMode(false);
+    process.stdin.off('keypress', onKeypress);
+    clearInputBlock();
+    onClose();
+  }
+
+  function onKeypress(str, key = {}) {
+    if (closed) {
+      return;
+    }
+
+    if (key.ctrl && key.name === 'c') {
+      const now = Date.now();
+      if (now - lastInterruptAt < 1500) {
+        close();
+        return;
+      }
+
+      lastInterruptAt = now;
+      writeLines(['Press Ctrl+C again to exit DevTalk.']);
+      return;
+    }
+
+    if (key.name === 'return' || key.name === 'enter') {
+      submitInput();
+      return;
+    }
+    if (key.name === 'backspace') {
+      if (cursor > 0) {
+        input = input.slice(0, cursor - 1) + input.slice(cursor);
+        cursor -= 1;
+        redrawInputLine();
+      }
+      return;
+    }
+    if (key.name === 'delete') {
+      if (cursor < input.length) {
+        input = input.slice(0, cursor) + input.slice(cursor + 1);
+        redrawInputLine();
+      }
+      return;
+    }
+    if (key.name === 'left') {
+      if (cursor > 0) {
+        cursor -= 1;
+        redrawInputLine();
+      }
+      return;
+    }
+    if (key.name === 'right') {
+      if (cursor < input.length) {
+        cursor += 1;
+        redrawInputLine();
+      }
+      return;
+    }
+    if ((key.ctrl && key.name === 'a') || key.name === 'home') {
+      cursor = 0;
+      redrawInputLine();
+      return;
+    }
+    if ((key.ctrl && key.name === 'e') || key.name === 'end') {
+      cursor = input.length;
+      redrawInputLine();
+      return;
+    }
+    if (key.ctrl && key.name === 'u') {
+      input = '';
+      cursor = 0;
+      redrawInputLine();
+      return;
+    }
+    if (key.ctrl || key.meta || !str) {
+      return;
+    }
+
+    input = input.slice(0, cursor) + str + input.slice(cursor);
+    cursor += str.length;
+    redrawInputLine();
+  }
+
+  process.stdin.on('keypress', onKeypress);
+
+  return {
+    start() {
+      drawInputBlock();
+    },
+    writeLines,
+    close
+  };
 }
 
 async function main() {
@@ -285,6 +468,18 @@ async function main() {
 
   const seen = new Set();
   let ready = false;
+  let ui;
+
+  function writeLines(lines) {
+    if (ui) {
+      ui.writeLines(lines);
+      return;
+    }
+
+    for (const line of lines) {
+      console.log(line);
+    }
+  }
 
   channel.on('broadcast', { event: 'message' }, ({ payload }) => {
     if (!payload || payload.kind !== 'devtalk-message' || payload.peerId === peerId) {
@@ -296,26 +491,27 @@ async function main() {
     if (payload.id) {
       seen.add(payload.id);
     }
-    renderMessageAbovePrompt(rl, {
+    writeLines(formatMessage({
       id: payload.id || createId(),
       nickname: String(payload.nickname || 'someone'),
       text: String(payload.text || ''),
       attachment: payload.attachment,
       sentAt: Number(payload.sentAt) || Date.now(),
       mine: false
-    }, config.theme);
+    }, config.theme));
   });
 
   channel.subscribe((status) => {
     if (status === 'SUBSCRIBED') {
       ready = true;
-      console.log(`Connected to DevTalk room ${ROOM_ID} as ${config.nickname}.`);
-      console.log('Type /help for commands.');
-      rl.prompt();
+      writeLines([
+        `Connected to DevTalk room ${ROOM_ID} as ${config.nickname}.`,
+        'Type /help for commands.'
+      ]);
       return;
     }
     if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-      console.error('DevTalk connection status:', status);
+      writeLines(['DevTalk connection status: ' + status]);
     }
   });
 
@@ -331,28 +527,35 @@ async function main() {
     });
 
     if (result !== 'ok') {
-      console.error('Message was not sent. Supabase returned:', result);
+      writeLines(['Message was not sent. Supabase returned: ' + result]);
       return;
     }
-
-    renderMessage({ ...message, mine: true }, config.theme);
   }
 
   async function editConfig() {
-    await promptConfig(config);
-    await saveConfig(config);
-    console.log('Saved DevTalk terminal settings. Restart DevTalk if URL or key changed.');
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+    }
+    try {
+      await promptConfig(config);
+      await saveConfig(config);
+      writeLines(['Saved DevTalk terminal settings. Restart DevTalk if URL or key changed.']);
+    } finally {
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(true);
+      }
+    }
   }
 
   async function setTheme(value) {
     const nextTheme = value || (config.theme === 'work' ? 'default' : 'work');
     if (!['default', 'work'].includes(nextTheme)) {
-      console.error('Usage: /theme [default|work]');
+      writeLines(['Usage: /theme [default|work]']);
       return;
     }
     config.theme = nextTheme;
     await saveConfig(config);
-    console.log('Theme changed to ' + nextTheme + '.');
+    writeLines(['Theme changed to ' + nextTheme + '.']);
   }
 
   async function sendText(text) {
@@ -370,11 +573,11 @@ async function main() {
     const filePath = path.resolve(rawPath.replace(/^['"]|['"]$/g, ''));
     const stat = await fs.promises.stat(filePath);
     if (!stat.isFile()) {
-      console.error('Not a file:', filePath);
+      writeLines(['Not a file: ' + filePath]);
       return;
     }
     if (stat.size > MAX_FILE_SIZE) {
-      console.error('Files must be 5 MB or smaller.');
+      writeLines(['Files must be 5 MB or smaller.']);
       return;
     }
 
@@ -387,7 +590,7 @@ async function main() {
     ].join('/');
     const buffer = await fs.promises.readFile(filePath);
 
-    console.log('Uploading', name + '...');
+    writeLines(['Uploading ' + name + '...']);
     const { error } = await supabase.storage
       .from(config.bucket)
       .upload(objectPath, buffer, {
@@ -396,7 +599,7 @@ async function main() {
       });
 
     if (error) {
-      console.error('File upload failed:', error.message);
+      writeLines(['File upload failed: ' + error.message]);
       return;
     }
 
@@ -422,53 +625,29 @@ async function main() {
     });
   }
 
-  let lastInterruptAt = 0;
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: '> '
-  });
-
-  rl.on('SIGINT', () => {
-    const now = Date.now();
-    if (now - lastInterruptAt < 1500) {
-      rl.close();
-      return;
-    }
-
-    lastInterruptAt = now;
-    console.log('Press Ctrl+C again to exit DevTalk.');
-    rl.prompt();
-  });
-
-  rl.on('line', async (line) => {
+  async function handleLine(line) {
     const text = line.trim();
     if (!text) {
-      rl.prompt();
       return;
     }
     if (text === '/quit' || text === '/exit') {
-      rl.close();
+      ui.close();
       return;
     }
     if (text === '/help') {
-      printHelp();
-      rl.prompt();
+      writeLines(getHelpLines());
       return;
     }
     if (text === '/config') {
       await editConfig();
-      rl.prompt();
       return;
     }
     if (text === '/theme' || text.startsWith('/theme ')) {
       await setTheme(text.slice('/theme'.length).trim());
-      rl.prompt();
       return;
     }
     if (!ready) {
-      console.error('DevTalk is still connecting.');
-      rl.prompt();
+      writeLines(['DevTalk is still connecting.']);
       return;
     }
 
@@ -479,15 +658,18 @@ async function main() {
         await sendText(text);
       }
     } catch (error) {
-      console.error(error.message);
+      writeLines([error.message]);
     }
-    rl.prompt();
-  });
+  }
 
-  rl.on('close', async () => {
-    await supabase.removeChannel(channel);
-    process.exit(0);
+  ui = createChatUi({
+    onLine: handleLine,
+    async onClose() {
+      await supabase.removeChannel(channel);
+      process.exit(0);
+    }
   });
+  ui.start();
 }
 
 main().catch((error) => {
