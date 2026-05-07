@@ -89,17 +89,19 @@ To use a fixed nickname without the first-run prompt, also set:
 
 ## Terminal
 
-DevTalk can also run in a terminal against the same Supabase room. Keep real values in environment variables or your shell profile, not in Git.
+DevTalk can also run in a terminal against the same Supabase room. On first run, missing settings are prompted and saved to `~/.devtalk/config.json`. Keep real values out of Git.
 
 ```bash
-export DEVTALK_SUPABASE_URL="https://your-project.supabase.co"
-export DEVTALK_SUPABASE_ANON_KEY="your-anon-key"
-export DEVTALK_ROOM_ID="general"
-export DEVTALK_NICKNAME="your-name"
 npm run cli
 ```
 
 After packaging or installing the package, you can also run:
+
+```bash
+devtalk
+```
+
+CLI arguments and environment variables override saved settings:
 
 ```bash
 devtalk --room general --name your-name
@@ -129,6 +131,7 @@ To run the extension locally, open this folder in VS Code, press `F5`, and open 
 
 - `devtalk.supabaseUrl` and `devtalk.supabaseAnonKey` are runtime settings, not source files.
 - `.env*` is ignored for local notes or scripts.
+- Terminal settings are saved outside the repository at `~/.devtalk/config.json`.
 - The anon key is intended for client-side apps, but access must still be controlled with Supabase Row Level Security and Storage policies.
 - Do not use the Supabase service role key in DevTalk.
 
