@@ -274,21 +274,28 @@ function formatMessage(message, theme = 'default', options = {}) {
     return lines;
   }
 
-  return colorizeMessageLines(lines, message);
+  return colorizeMessageLines(lines, message, options.speakerColors);
 }
 
-function speakerIndex(message) {
-  const key = message.peerId || message.nickname || (message.mine ? 'you' : 'someone');
-  let hash = 0;
-  for (let index = 0; index < key.length; index += 1) {
-    hash = ((hash << 5) - hash + key.charCodeAt(index)) | 0;
+function getSpeakerKey(message) {
+  return message.peerId || message.nickname || (message.mine ? 'you' : 'someone');
+}
+
+function getSpeakerColor(message, speakerColors) {
+  if (!speakerColors) {
+    return SPEAKER_COLORS[0];
   }
 
-  return Math.abs(hash) % SPEAKER_COLORS.length;
+  const key = getSpeakerKey(message);
+  if (!speakerColors.has(key)) {
+    speakerColors.set(key, speakerColors.size % SPEAKER_COLORS.length);
+  }
+
+  return SPEAKER_COLORS[speakerColors.get(key)];
 }
 
-function colorizeMessageLines(lines, message) {
-  const [red, green, blue] = SPEAKER_COLORS[speakerIndex(message)];
+function colorizeMessageLines(lines, message, speakerColors) {
+  const [red, green, blue] = getSpeakerColor(message, speakerColors);
   const bg = `\x1b[48;2;${red};${green};${blue}m`;
   const fg = '\x1b[38;2;30;30;30m';
   const reset = '\x1b[0m';
@@ -526,6 +533,7 @@ async function main() {
   });
 
   const seen = new Set();
+  const speakerColors = new Map();
   let ready = false;
   let ui;
 
@@ -558,7 +566,7 @@ async function main() {
       attachment: payload.attachment,
       sentAt: Number(payload.sentAt) || Date.now(),
       mine: false
-    }, config.theme, { colorMode: config.colorMode }));
+    }, config.theme, { colorMode: config.colorMode, speakerColors }));
   });
 
   channel.subscribe((status) => {
@@ -591,7 +599,7 @@ async function main() {
       return;
     }
 
-    writeLines(formatMessage({ ...message, mine: true }, config.theme, { colorMode: config.colorMode }));
+    writeLines(formatMessage({ ...message, mine: true }, config.theme, { colorMode: config.colorMode, speakerColors }));
   }
 
   async function editConfig() {

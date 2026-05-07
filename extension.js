@@ -898,14 +898,17 @@ function getWebviewHtml(webview) {
       return (value / 1024 / 1024).toFixed(1) + ' MB';
     }
 
-    function speakerColors(message, state) {
-      const key = message.peerId || message.nickname || (message.mine ? state.nickname : 'someone');
-      let hash = 0;
-      for (let index = 0; index < key.length; index += 1) {
-        hash = ((hash << 5) - hash + key.charCodeAt(index)) | 0;
+    function speakerKey(message, state) {
+      return message.peerId || message.nickname || (message.mine ? state.nickname : 'someone');
+    }
+
+    function speakerColors(message, state, speakerMap) {
+      const key = speakerKey(message, state);
+      if (!speakerMap.has(key)) {
+        speakerMap.set(key, speakerMap.size % speakerPalette.length);
       }
 
-      const colors = speakerPalette[Math.abs(hash) % speakerPalette.length];
+      const colors = speakerPalette[speakerMap.get(key)];
       return {
         background: colors[0],
         border: colors[1]
@@ -969,6 +972,8 @@ function getWebviewHtml(webview) {
         return;
       }
 
+      const speakerMap = new Map();
+
       for (const message of state.messages) {
         if (message.id === state.readMarkerMessageId) {
           const marker = document.createElement('div');
@@ -987,7 +992,7 @@ function getWebviewHtml(webview) {
         const bubble = document.createElement('div');
         bubble.className = 'bubble';
         if (state.colorMode) {
-          const colors = speakerColors(message, state);
+          const colors = speakerColors(message, state, speakerMap);
           bubble.style.setProperty('--speaker-bg', colors.background);
           bubble.style.setProperty('--speaker-border', colors.border);
         }
