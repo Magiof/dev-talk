@@ -428,6 +428,7 @@ class DevTalkViewProvider {
       id: payload.id || createId(),
       text: String(payload.text || ''),
       nickname: String(payload.nickname || 'Someone'),
+      peerId: String(payload.peerId || ''),
       attachment: normalizeAttachment(payload.attachment),
       mine: false,
       sentAt: Number(payload.sentAt) || Date.now()
@@ -641,20 +642,22 @@ function getWebviewHtml(webview) {
       white-space: nowrap;
     }
     .bubble {
+      --speaker-bg: color-mix(in srgb, var(--vscode-input-background) 92%, transparent);
+      --speaker-border: var(--vscode-input-border, transparent);
       max-width: 86%;
       padding: 7px 9px;
-      border: 1px solid var(--vscode-input-border, transparent);
+      border: 1px solid var(--speaker-border);
       border-radius: 8px;
-      background: var(--vscode-input-background);
+      background: var(--speaker-bg);
       color: var(--vscode-input-foreground);
       line-height: 1.4;
       overflow-wrap: anywhere;
       white-space: pre-wrap;
+      box-shadow: inset 4px 0 0 var(--speaker-border);
     }
     .mine .bubble {
-      background: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
-      border-color: var(--vscode-button-background);
+      color: var(--vscode-input-foreground);
+      box-shadow: inset -4px 0 0 var(--speaker-border);
     }
     .attachment {
       display: grid;
@@ -747,11 +750,13 @@ function getWebviewHtml(webview) {
       background: transparent;
       color: var(--vscode-foreground);
       line-height: 1.28;
+      box-shadow: none;
     }
     .theme-work .mine .bubble {
       background: transparent;
       color: var(--vscode-foreground);
       border-color: transparent;
+      box-shadow: none;
     }
     .theme-work .attachment { gap: 3px; }
     .theme-work .attachment img {
@@ -833,6 +838,20 @@ function getWebviewHtml(webview) {
       return (value / 1024 / 1024).toFixed(1) + ' MB';
     }
 
+    function speakerColors(message, state) {
+      const key = message.peerId || message.nickname || (message.mine ? state.nickname : 'someone');
+      let hash = 0;
+      for (let index = 0; index < key.length; index += 1) {
+        hash = ((hash << 5) - hash + key.charCodeAt(index)) | 0;
+      }
+
+      const hue = Math.abs(hash) % 360;
+      return {
+        background: 'hsl(' + hue + ' 88% 82% / 0.34)',
+        border: 'hsl(' + hue + ' 82% 64% / 0.72)'
+      };
+    }
+
     function renderAttachment(attachment) {
       const wrap = document.createElement('div');
       wrap.className = 'attachment';
@@ -906,6 +925,9 @@ function getWebviewHtml(webview) {
 
         const bubble = document.createElement('div');
         bubble.className = 'bubble';
+        const colors = speakerColors(message, state);
+        bubble.style.setProperty('--speaker-bg', colors.background);
+        bubble.style.setProperty('--speaker-border', colors.border);
         if (message.text) {
           const text = document.createElement('div');
           text.textContent = message.text;
