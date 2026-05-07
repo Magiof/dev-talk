@@ -530,6 +530,8 @@ async function main() {
       writeLines(['Message was not sent. Supabase returned: ' + result]);
       return;
     }
+
+    writeLines(formatMessage({ ...message, mine: true }, config.theme));
   }
 
   async function editConfig() {
