@@ -2,7 +2,7 @@
   "name": "devtalk",
   "displayName": "DevTalk",
   "description": "A tiny team chat view for VS Code and Cursor.",
-  "version": "0.1.4",
+  "version": "0.1.6",
   "publisher": "magiof",
   "engines": {
     "vscode": "^1.90.0"
@@ -90,9 +90,11 @@
   },
   "homepage": "https://github.com/Magiof/dev-talk#readme",
   "dependencies": {
-    "@supabase/supabase-js": "^2.105.3"
+    "@supabase/supabase-js": "^2.105.3",
+    "ws": "^8.20.0"
   },
   "bin": {
-    "devtalk": "./cli.js"
+    "devtalk": "./cli.js",
+    "dev-talk": "./cli.js"
   }
 }

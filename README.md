@@ -78,7 +78,7 @@ Set these in VS Code/Cursor user settings. Do not commit real values.
 }
 ```
 
-Use `"devtalk.theme": "work"` for a quieter, denser view that looks more like work logs than chat.
+Use `"devtalk.theme": "work"` for a quieter, denser view that looks more like work logs than chat. You can also type `/theme` or `/theme work` in DevTalk to switch themes. Type `/config` to edit nickname and Supabase settings from the chat view.
 
 To use a fixed nickname without the first-run prompt, also set:
 
@@ -99,24 +99,26 @@ npm run cli
 After packaging or installing the package, you can also run:
 
 ```bash
-devtalk
+dev-talk
 ```
 
 DevTalk uses one shared room internally. CLI arguments and environment variables override saved settings:
 
 ```bash
-devtalk --bucket devtalk-files --name your-name
+dev-talk --bucket devtalk-files --name your-name
 ```
 
 Terminal commands:
 
 ```text
+/theme [default|work]
+/config
 /file ./image.gif
 /help
 /quit
 ```
 
-Files are limited to 5 MB. GIFs and images sent from the terminal appear as previews in the VS Code/Cursor view.
+Files are limited to 5 MB. GIFs and images sent from the terminal appear as previews in the VS Code/Cursor view. Press `Ctrl+C` twice quickly to exit.
 
 ## Development
 

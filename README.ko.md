@@ -82,7 +82,7 @@ cursor --install-extension devtalk-0.1.3.vsix
 }
 ```
 
-업무용으로 조용하고 촘촘한 화면을 쓰고 싶으면 이렇게 설정합니다.
+업무용으로 조용하고 촘촘한 화면을 쓰고 싶으면 이렇게 설정합니다. DevTalk 입력창에서 `/theme` 또는 `/theme work`를 입력해도 테마를 바꿀 수 있고, `/config`를 입력하면 닉네임과 Supabase 설정을 다시 변경할 수 있습니다.
 
 ```json
 {
@@ -109,24 +109,26 @@ npm run cli
 패키지로 설치했거나 bin을 사용할 수 있다면 아래처럼 실행할 수 있습니다.
 
 ```bash
-devtalk
+dev-talk
 ```
 
 DevTalk는 내부적으로 하나의 공유 대화방만 사용합니다. CLI 인자나 환경변수는 저장된 설정값보다 우선합니다.
 
 ```bash
-devtalk --bucket devtalk-files --name your-name
+dev-talk --bucket devtalk-files --name your-name
 ```
 
 터미널 명령:
 
 ```text
+/theme [default|work]
+/config
 /file ./image.gif
 /help
 /quit
 ```
 
-파일은 5MB까지만 업로드됩니다. 터미널에서 보낸 GIF와 이미지는 VS Code/Cursor DevTalk 뷰에서 미리보기로 표시됩니다.
+파일은 5MB까지만 업로드됩니다. 터미널에서 보낸 GIF와 이미지는 VS Code/Cursor DevTalk 뷰에서 미리보기로 표시됩니다. 종료하려면 `Ctrl+C`를 빠르게 두 번 누르세요.
 
 ## 개발
 

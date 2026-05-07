@@ -1,6 +1,11 @@
 const vscode = require('vscode');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
+const WebSocket = require('ws');
+
+if (typeof globalThis.WebSocket === 'undefined') {
+  globalThis.WebSocket = WebSocket;
+}
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const DEFAULT_BUCKET = 'devtalk-files';
@@ -187,6 +192,10 @@ class DevTalkViewProvider {
     if (!text) {
       return;
     }
+    if (text.startsWith('/')) {
+      await this.handleCommand(text);
+      return;
+    }
     if (!this.canSend()) {
       this.status = this.config.ready
         ? 'DevTalk is still connecting.'
@@ -203,6 +212,109 @@ class DevTalkViewProvider {
       text,
       sentAt: Date.now()
     });
+  }
+
+  async handleCommand(text) {
+    const [command, ...args] = text.slice(1).split(/\s+/);
+    const value = args.join(' ').trim();
+
+    if (command === 'theme') {
+      await this.setThemeCommand(value);
+      return;
+    }
+    if (command === 'config') {
+      await this.configureSettings();
+      return;
+    }
+    if (command === 'help') {
+      this.status = 'Commands: /theme [default|work], /config';
+      this.postState();
+      return;
+    }
+
+    this.status = 'Unknown command: /' + command;
+    this.postState();
+  }
+
+  async setThemeCommand(value) {
+    const current = getTheme();
+    const nextTheme = value || (current === 'work' ? 'default' : 'work');
+    if (!['default', 'work'].includes(nextTheme)) {
+      this.status = 'Usage: /theme [default|work]';
+      this.postState();
+      return;
+    }
+
+    await vscode.workspace
+      .getConfiguration('devtalk')
+      .update('theme', nextTheme, vscode.ConfigurationTarget.Global);
+    this.status = 'Theme changed to ' + nextTheme + '.';
+    this.postState();
+  }
+
+  async configureSettings() {
+    const config = vscode.workspace.getConfiguration('devtalk');
+    const current = getSupabaseConfig();
+    const nickname = await vscode.window.showInputBox({
+      title: 'DevTalk nickname',
+      value: this.nickname || '',
+      prompt: 'Shown to other people in DevTalk.'
+    });
+    if (nickname === undefined) {
+      return;
+    }
+
+    const supabaseUrl = await vscode.window.showInputBox({
+      title: 'DevTalk Supabase URL',
+      value: current.url || '',
+      prompt: 'Example: https://your-project.supabase.co'
+    });
+    if (supabaseUrl === undefined) {
+      return;
+    }
+
+    const anonKey = await vscode.window.showInputBox({
+      title: 'DevTalk Supabase anon key',
+      value: current.anonKey || '',
+      password: true,
+      prompt: 'Use anon/publishable key only. Never use service role key.'
+    });
+    if (anonKey === undefined) {
+      return;
+    }
+
+    const bucket = await vscode.window.showInputBox({
+      title: 'DevTalk Storage bucket',
+      value: current.bucket || DEFAULT_BUCKET,
+      prompt: 'Supabase Storage bucket for files and images.'
+    });
+    if (bucket === undefined) {
+      return;
+    }
+
+    const cleanNickname = nickname.trim().slice(0, 32);
+    if (cleanNickname) {
+      this.nickname = cleanNickname;
+      await this.context.globalState.update('nickname', cleanNickname);
+    }
+
+    await config.update('supabaseUrl', supabaseUrl.trim(), vscode.ConfigurationTarget.Global);
+    await config.update('supabaseAnonKey', anonKey.trim(), vscode.ConfigurationTarget.Global);
+    await config.update('storageBucket', bucket.trim() || DEFAULT_BUCKET, vscode.ConfigurationTarget.Global);
+
+    await this.reconnect();
+    this.status = 'DevTalk configuration updated.';
+    this.postState();
+  }
+
+  async reconnect() {
+    if (this.channel && this.supabase) {
+      await this.supabase.removeChannel(this.channel);
+    }
+    this.channel = undefined;
+    this.supabase = undefined;
+    this.config = getSupabaseConfig();
+    this.connect();
   }
 
   async uploadFile(file) {

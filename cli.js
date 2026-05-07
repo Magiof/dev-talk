@@ -5,6 +5,11 @@ const path = require('path');
 const readline = require('readline');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
+const WebSocket = require('ws');
+
+if (typeof globalThis.WebSocket === 'undefined') {
+  globalThis.WebSocket = WebSocket;
+}
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const DEFAULT_BUCKET = 'devtalk-files';
@@ -45,7 +50,8 @@ function getConfig(saved = {}) {
     url: getArg('url') || process.env.DEVTALK_SUPABASE_URL || saved.url || '',
     anonKey: getArg('key') || process.env.DEVTALK_SUPABASE_ANON_KEY || saved.anonKey || '',
     bucket: getArg('bucket') || process.env.DEVTALK_STORAGE_BUCKET || saved.bucket || DEFAULT_BUCKET,
-    nickname: getArg('name') || process.env.DEVTALK_NICKNAME || saved.nickname || os.userInfo().username || os.hostname() || 'terminal'
+    nickname: getArg('name') || process.env.DEVTALK_NICKNAME || saved.nickname || os.userInfo().username || os.hostname() || 'terminal',
+    theme: getArg('theme') || process.env.DEVTALK_THEME || saved.theme || 'default'
   };
 }
 
@@ -80,6 +86,7 @@ async function ensureConfig() {
     config.anonKey = config.anonKey || await ask(rl, 'Supabase anon key');
     config.bucket = await ask(rl, 'Storage bucket', config.bucket || DEFAULT_BUCKET);
     config.nickname = await ask(rl, 'Nickname', config.nickname || 'terminal');
+    config.theme = normalizeTheme(await ask(rl, 'Theme', config.theme || 'default'));
   } finally {
     rl.close();
   }
@@ -97,7 +104,7 @@ async function ensureConfig() {
 function printHelp() {
   console.log('DevTalk terminal');
   console.log('');
-  console.log('Usage: devtalk [--url <supabase-url>] [--key <anon-key>] [--bucket devtalk-files] [--name you]');
+  console.log('Usage: devtalk [--url <supabase-url>] [--key <anon-key>] [--bucket devtalk-files] [--name you] [--theme default|work]');
   console.log('');
   console.log('Settings are saved at ' + CONFIG_PATH + ' after first setup.');
   console.log('CLI arguments and environment variables override saved settings.');
@@ -107,9 +114,12 @@ function printHelp() {
   console.log('  DEVTALK_SUPABASE_ANON_KEY');
   console.log('  DEVTALK_STORAGE_BUCKET');
   console.log('  DEVTALK_NICKNAME');
+  console.log('  DEVTALK_THEME');
   console.log('');
   console.log('Commands:');
   console.log('  /file <path>   upload a file up to 5 MB');
+  console.log('  /theme [name]  switch default/work terminal output');
+  console.log('  /config        edit saved terminal settings');
   console.log('  /help          show this help');
   console.log('  /quit          exit');
 }
@@ -154,10 +164,18 @@ function guessContentType(filePath) {
   return types[ext] || 'application/octet-stream';
 }
 
-function renderMessage(message) {
+function normalizeTheme(value) {
+  return value === 'work' ? 'work' : 'default';
+}
+
+function renderMessage(message, theme = 'default') {
   const who = message.mine ? 'you' : message.nickname || 'someone';
   const text = message.text ? ' ' + message.text : '';
-  console.log(`[${formatTime(message.sentAt)}] ${who}:${text}`);
+  if (theme === 'work') {
+    console.log(`${formatTime(message.sentAt)} ${who}${text}`);
+  } else {
+    console.log(`[${formatTime(message.sentAt)}] ${who}:${text}`);
+  }
 
   if (message.attachment) {
     const meta = [message.attachment.type, formatSize(message.attachment.size)].filter(Boolean).join(' · ');
@@ -173,6 +191,7 @@ async function main() {
   }
 
   const config = await ensureConfig();
+  config.theme = normalizeTheme(config.theme);
 
   const supabase = createClient(config.url, config.anonKey, {
     auth: {
@@ -210,7 +229,7 @@ async function main() {
       attachment: payload.attachment,
       sentAt: Number(payload.sentAt) || Date.now(),
       mine: false
-    });
+    }, config.theme);
     rl.prompt();
   });
 
@@ -239,7 +258,38 @@ async function main() {
       return;
     }
 
-    renderMessage({ ...message, mine: true });
+    renderMessage({ ...message, mine: true }, config.theme);
+  }
+
+  async function editConfig() {
+    const configRl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+
+    try {
+      config.url = await ask(configRl, 'Supabase URL', config.url);
+      config.anonKey = await ask(configRl, 'Supabase anon key', config.anonKey);
+      config.bucket = await ask(configRl, 'Storage bucket', config.bucket || DEFAULT_BUCKET);
+      config.nickname = await ask(configRl, 'Nickname', config.nickname || 'terminal');
+      config.theme = normalizeTheme(await ask(configRl, 'Theme', config.theme || 'default'));
+    } finally {
+      configRl.close();
+    }
+
+    await saveConfig(config);
+    console.log('Saved DevTalk terminal settings. Restart DevTalk if URL or key changed.');
+  }
+
+  async function setTheme(value) {
+    const nextTheme = value || (config.theme === 'work' ? 'default' : 'work');
+    if (!['default', 'work'].includes(nextTheme)) {
+      console.error('Usage: /theme [default|work]');
+      return;
+    }
+    config.theme = nextTheme;
+    await saveConfig(config);
+    console.log('Theme changed to ' + nextTheme + '.');
   }
 
   async function sendText(text) {
@@ -309,10 +359,23 @@ async function main() {
     });
   }
 
+  let lastInterruptAt = 0;
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
     prompt: '> '
+  });
+
+  rl.on('SIGINT', () => {
+    const now = Date.now();
+    if (now - lastInterruptAt < 1500) {
+      rl.close();
+      return;
+    }
+
+    lastInterruptAt = now;
+    console.log('Press Ctrl+C again to exit DevTalk.');
+    rl.prompt();
   });
 
   rl.on('line', async (line) => {
@@ -327,6 +390,16 @@ async function main() {
     }
     if (text === '/help') {
       printHelp();
+      rl.prompt();
+      return;
+    }
+    if (text === '/config') {
+      await editConfig();
+      rl.prompt();
+      return;
+    }
+    if (text === '/theme' || text.startsWith('/theme ')) {
+      await setTheme(text.slice('/theme'.length).trim());
       rl.prompt();
       return;
     }
