@@ -3,7 +3,7 @@
   "displayName": "DevTalk",
   "description": "A tiny team chat view for VS Code and Cursor.",
   "version": "0.0.12",
-  "publisher": "local",
+  "publisher": "magiof",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -54,5 +54,14 @@
   },
   "extensionKind": [
     "ui"
-  ]
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/Magiof/dev-talk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Magiof/dev-talk/issues"
+  },
+  "homepage": "https://github.com/Magiof/dev-talk#readme"
 }
