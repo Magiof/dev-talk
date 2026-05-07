@@ -15,6 +15,7 @@ DevTalk is a small team chat view for VS Code and Cursor. It lives in the activi
 - Supabase Storage file sharing
 - Image and animated GIF previews
 - 5 MB file size limit
+- Default and work visual themes
 
 ## Supabase Setup
 
@@ -70,9 +71,12 @@ Set these in VS Code/Cursor user settings. Do not commit real values.
   "devtalk.supabaseUrl": "https://your-project.supabase.co",
   "devtalk.supabaseAnonKey": "your-anon-key",
   "devtalk.roomId": "general",
-  "devtalk.storageBucket": "devtalk-files"
+  "devtalk.storageBucket": "devtalk-files",
+  "devtalk.theme": "default"
 }
 ```
+
+Use `"devtalk.theme": "work"` for a quieter, denser view that looks more like work logs than chat.
 
 To use a fixed nickname without the first-run prompt, also set:
 

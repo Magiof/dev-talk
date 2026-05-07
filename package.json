@@ -2,7 +2,7 @@
   "name": "devtalk",
   "displayName": "DevTalk",
   "description": "A tiny team chat view for VS Code and Cursor.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "magiof",
   "engines": {
     "vscode": "^1.90.0"
@@ -68,6 +68,15 @@
           "type": "string",
           "default": "devtalk-files",
           "description": "Supabase Storage bucket used for files and images."
+        },
+        "devtalk.theme": {
+          "type": "string",
+          "enum": [
+            "default",
+            "work"
+          ],
+          "default": "default",
+          "description": "DevTalk visual theme. Use work for a quieter, denser chat view."
         }
       }
     }

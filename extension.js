@@ -362,6 +362,7 @@ class DevTalkViewProvider {
       needsNickname: !this.nickname,
       canSend: this.canSend(),
       maxFileSize: MAX_FILE_SIZE,
+      theme: getTheme(),
       unreadCount: this.unreadCount,
       readMarkerMessageId: this.readMarkerMessageId,
       messages: this.messages
@@ -378,6 +379,14 @@ function getNickname(context) {
   const savedName = typeof saved === 'string' ? saved.trim() : '';
 
   return configuredName || savedName;
+}
+
+function getTheme() {
+  const theme = vscode.workspace
+    .getConfiguration('devtalk')
+    .get('theme', 'default');
+
+  return theme === 'work' ? 'work' : 'default';
 }
 
 function getSupabaseConfig() {
@@ -603,6 +612,64 @@ function getWebviewHtml(webview) {
       opacity: 0.55;
     }
     .file-input { display: none; }
+
+    body.theme-work {
+      font-size: calc(var(--vscode-font-size) - 1px);
+    }
+    .theme-work .header { padding: 7px 9px 6px; }
+    .theme-work .title { font-size: 11px; font-weight: 500; }
+    .theme-work .status { font-size: 10px; }
+    .theme-work .messages { padding: 6px 8px; }
+    .theme-work .message,
+    .theme-work .message.mine {
+      align-items: stretch;
+      gap: 1px;
+      margin-bottom: 5px;
+    }
+    .theme-work .meta {
+      max-width: 100%;
+      font-size: 9px;
+    }
+    .theme-work .bubble {
+      max-width: 100%;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--vscode-foreground);
+      line-height: 1.28;
+    }
+    .theme-work .mine .bubble {
+      background: transparent;
+      color: var(--vscode-foreground);
+      border-color: transparent;
+    }
+    .theme-work .attachment { gap: 3px; }
+    .theme-work .attachment img {
+      max-height: 140px;
+      border-radius: 2px;
+    }
+    .theme-work .file-link {
+      color: var(--vscode-textLink-foreground);
+      text-decoration: none;
+    }
+    .theme-work .file-meta { font-size: 9px; }
+    .theme-work .composer {
+      gap: 4px;
+      padding: 6px;
+    }
+    .theme-work input,
+    .theme-work textarea {
+      height: 28px;
+      padding: 5px 6px;
+      font-size: calc(var(--vscode-font-size) - 1px);
+    }
+    .theme-work button {
+      min-width: 30px;
+      height: 28px;
+      padding: 0 7px;
+      font-size: 10px;
+    }
   </style>
 </head>
 <body>
@@ -688,6 +755,7 @@ function getWebviewHtml(webview) {
 
     function render(state) {
       maxFileSize = state.maxFileSize || maxFileSize;
+      document.body.classList.toggle('theme-work', state.theme === 'work');
 
       if (state.needsNickname) {
         setupEl.hidden = false;
