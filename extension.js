@@ -381,7 +381,7 @@ class DevTalkViewProvider {
     const choices = [
       {
         label: 'Supabase',
-        description: this.config.ready ? 'configured realtime room' : 'setup required',
+        description: 'configured realtime room',
         detail: 'Use your configured Supabase Realtime room with file uploads.',
         value: 'supabase'
       },
@@ -406,8 +406,9 @@ class DevTalkViewProvider {
   }
 
   async joinSupabaseChat() {
-    if (!hasSharedConfig()) {
-      log('shared config missing, prompting setup before join');
+    this.config = getSupabaseConfig();
+    if (!this.config.ready) {
+      log('Supabase config missing, prompting setup before Supabase join');
       const configured = await this.ensureSharedConfig();
       if (!configured) {
         log('join canceled during setup');
