@@ -3,7 +3,7 @@
   "displayName": "DevTalk",
   "description": "A tiny team chat view for VS Code and Cursor.",
   "icon": "media/devtalk-icon.png",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "publisher": "magiof",
   "engines": {
     "vscode": "^1.90.0"

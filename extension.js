@@ -1,5 +1,6 @@
 const vscode = require('vscode');
 const crypto = require('crypto');
+const dgram = require('dgram');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -7,6 +8,10 @@ const path = require('path');
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const DEFAULT_BUCKET = 'devtalk-files';
 const ROOM_ID = 'general';
+const UDP_PORT = 42424;
+const UDP_MULTICAST_ADDRESS = '239.255.42.24';
+const UDP_HEARTBEAT_MS = 5000;
+const UDP_STALE_MS = 15000;
 const CONFIG_DIR = path.join(os.homedir(), '.devtalk');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const output = vscode.window.createOutputChannel('DevTalk');
@@ -71,6 +76,9 @@ class DevTalkViewProvider {
     this.webviewView = undefined;
     this.supabase = undefined;
     this.channel = undefined;
+    this.udpSocket = undefined;
+    this.udpHeartbeat = undefined;
+    this.udpPeers = new Map();
     this.messages = [];
     this.participants = [];
     this.seenMessageIds = new Set();
@@ -83,11 +91,10 @@ class DevTalkViewProvider {
     this.promptingConfig = false;
     this.joined = false;
     this.connected = false;
+    this.transport = '';
 
     if (!this.nickname) {
       this.status = 'Enter your name to start.';
-    } else if (!this.config.ready) {
-      this.status = this.config.message;
     }
     log('provider constructor finished: nickname=' + Boolean(this.nickname) + ', configReady=' + Boolean(this.config.ready));
   }
@@ -181,10 +188,10 @@ class DevTalkViewProvider {
     this.config = getSupabaseConfig();
     if (!this.nickname) {
       this.status = 'Enter your name to start.';
-    } else if (!this.config.ready) {
-      this.status = this.config.message;
     } else if (!this.joined) {
       this.status = 'Ready to join DevTalk.';
+    } else if (this.transport === 'supabase' && !this.config.ready) {
+      this.status = this.config.message;
     }
   }
 
@@ -356,6 +363,49 @@ class DevTalkViewProvider {
       return;
     }
 
+    const transport = await this.pickJoinTransport();
+    if (!transport) {
+      return;
+    }
+
+    if (transport === 'udp') {
+      await this.joinUdpChat();
+      return;
+    }
+
+    await this.joinSupabaseChat();
+  }
+
+  async pickJoinTransport() {
+    const previous = this.context.globalState.get('transport', 'supabase');
+    const choices = [
+      {
+        label: 'Supabase',
+        description: this.config.ready ? 'configured realtime room' : 'setup required',
+        detail: 'Use your configured Supabase Realtime room with file uploads.',
+        value: 'supabase'
+      },
+      {
+        label: 'UDP LAN',
+        description: 'same Wi-Fi/local network',
+        detail: 'No Supabase setup needed. Text chat only; file uploads stay disabled.',
+        value: 'udp'
+      }
+    ];
+    const sorted = choices.sort((a, b) => {
+      if (a.value === previous) return -1;
+      if (b.value === previous) return 1;
+      return 0;
+    });
+    const selected = await vscode.window.showQuickPick(sorted, {
+      title: 'Join DevTalk',
+      placeHolder: 'Choose how to connect'
+    });
+
+    return selected && selected.value;
+  }
+
+  async joinSupabaseChat() {
     if (!hasSharedConfig()) {
       log('shared config missing, prompting setup before join');
       const configured = await this.ensureSharedConfig();
@@ -376,6 +426,8 @@ class DevTalkViewProvider {
 
     if (this.channel) {
       this.joined = true;
+      this.transport = 'supabase';
+      await this.context.globalState.update('transport', 'supabase');
       this.status = this.connected ? 'Connected to DevTalk room ' + ROOM_ID : 'Connecting to DevTalk...';
       this.trackPresence();
       this.updateParticipants();
@@ -384,9 +436,90 @@ class DevTalkViewProvider {
     }
 
     this.joined = true;
+    this.transport = 'supabase';
+    await this.context.globalState.update('transport', 'supabase');
     this.status = 'Connecting to DevTalk...';
     this.postState();
     this.connect();
+  }
+
+  async joinUdpChat() {
+    if (this.udpSocket) {
+      this.joined = true;
+      this.connected = true;
+      this.transport = 'udp';
+      await this.context.globalState.update('transport', 'udp');
+      this.status = 'Connected to UDP LAN chat on port ' + UDP_PORT;
+      this.sendUdpPresence();
+      this.updateUdpParticipants();
+      this.postState();
+      return;
+    }
+
+    this.joined = true;
+    this.connected = false;
+    this.transport = 'udp';
+    await this.context.globalState.update('transport', 'udp');
+    this.status = 'Joining UDP LAN chat...';
+    this.postState();
+
+    await new Promise((resolve, reject) => {
+      const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+      let settled = false;
+      const finish = (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      };
+
+      socket.on('error', (error) => {
+        logError('UDP socket error', error);
+        this.joined = false;
+        this.connected = false;
+        this.transport = '';
+        this.closeUdpSocket();
+        try {
+          socket.close();
+        } catch {
+          // The socket may already be closed by the host runtime.
+        }
+        this.status = 'UDP LAN chat failed: ' + error.message;
+        this.postState();
+        finish(error);
+      });
+
+      socket.on('message', (buffer) => {
+        this.receiveUdpPacket(buffer);
+      });
+
+      socket.bind(UDP_PORT, () => {
+        try {
+          socket.setBroadcast(true);
+          socket.setMulticastTTL(1);
+          socket.addMembership(UDP_MULTICAST_ADDRESS);
+        } catch (error) {
+          logError('UDP multicast setup failed', error);
+        }
+
+        this.udpSocket = socket;
+        this.connected = true;
+        this.status = 'Connected to UDP LAN chat on port ' + UDP_PORT;
+        this.sendUdpPresence();
+        this.udpHeartbeat = setInterval(() => {
+          this.sendUdpPresence();
+          this.updateUdpParticipants();
+        }, UDP_HEARTBEAT_MS);
+        this.updateUdpParticipants();
+        this.postState();
+        finish();
+      });
+    });
   }
 
   async leaveChat() {
@@ -395,9 +528,11 @@ class DevTalkViewProvider {
     if (this.channel && this.supabase) {
       await this.supabase.removeChannel(this.channel);
     }
+    this.closeUdpSocket();
     this.channel = undefined;
     this.supabase = undefined;
     this.connected = false;
+    this.transport = '';
     this.participants = [];
     this.status = 'Left DevTalk. Join when you are ready.';
     this.postState();
@@ -438,7 +573,7 @@ class DevTalkViewProvider {
       return;
     }
     if (!this.canSend()) {
-      this.status = this.joined && this.config.ready
+      this.status = this.joined
         ? 'DevTalk is still connecting.'
         : this.config.ready
           ? 'Join DevTalk to send messages.'
@@ -571,7 +706,7 @@ class DevTalkViewProvider {
     });
 
     await this.reconnect();
-    if (this.joined) {
+    if (this.joined && this.transport === 'supabase') {
       this.trackPresence();
     }
     this.status = options.successMessage || (this.joined ? 'DevTalk configuration updated.' : 'DevTalk configuration updated. Join when you are ready.');
@@ -588,12 +723,18 @@ class DevTalkViewProvider {
     this.connected = false;
     this.participants = [];
     this.config = getSupabaseConfig();
-    if (this.joined) {
+    if (this.joined && this.transport === 'supabase') {
       this.connect();
     }
   }
 
   async uploadFile(file) {
+    if (this.transport === 'udp') {
+      this.status = 'File uploads are only available in Supabase mode.';
+      this.postState();
+      return;
+    }
+
     if (!this.canSend()) {
       this.status = this.joined && this.config.ready
         ? 'DevTalk is still connecting.'
@@ -670,6 +811,13 @@ class DevTalkViewProvider {
   }
 
   async publishMessage(message) {
+    if (this.transport === 'udp') {
+      this.sendUdpPacket(message);
+      this.addMessage({ ...message, mine: true });
+      this.status = 'Connected to UDP LAN chat on port ' + UDP_PORT;
+      return;
+    }
+
     const result = await this.channel.send({
       type: 'broadcast',
       event: 'message',
@@ -684,6 +832,101 @@ class DevTalkViewProvider {
 
     this.addMessage({ ...message, mine: true });
     this.status = 'Connected to DevTalk room ' + ROOM_ID;
+  }
+
+  sendUdpPacket(payload) {
+    if (!this.udpSocket) {
+      return;
+    }
+
+    const buffer = Buffer.from(JSON.stringify({
+      ...payload,
+      roomId: ROOM_ID
+    }), 'utf8');
+
+    for (const address of getUdpSendAddresses()) {
+      this.udpSocket.send(buffer, UDP_PORT, address, (error) => {
+        if (error) {
+          logError('UDP send failed', error);
+        }
+      });
+    }
+  }
+
+  sendUdpPresence() {
+    this.sendUdpPacket({
+      id: createId(),
+      kind: 'devtalk-presence',
+      peerId: this.peerId,
+      nickname: this.nickname,
+      sentAt: Date.now()
+    });
+  }
+
+  receiveUdpPacket(buffer) {
+    let payload;
+    try {
+      payload = JSON.parse(buffer.toString('utf8'));
+    } catch {
+      return;
+    }
+
+    if (!payload || payload.roomId !== ROOM_ID || payload.peerId === this.peerId) {
+      return;
+    }
+
+    if (payload.kind === 'devtalk-presence') {
+      this.udpPeers.set(String(payload.peerId), {
+        peerId: String(payload.peerId),
+        nickname: String(payload.nickname || 'Someone').trim() || 'Someone',
+        lastSeen: Date.now()
+      });
+      this.updateUdpParticipants();
+      return;
+    }
+
+    this.receiveMessage(payload);
+  }
+
+  updateUdpParticipants() {
+    const now = Date.now();
+    for (const [peerId, peer] of this.udpPeers.entries()) {
+      if (now - peer.lastSeen > UDP_STALE_MS) {
+        this.udpPeers.delete(peerId);
+      }
+    }
+
+    this.participants = [
+      {
+        peerId: this.peerId,
+        nickname: this.nickname,
+        mine: true
+      },
+      ...Array.from(this.udpPeers.values())
+        .sort((a, b) => a.nickname.localeCompare(b.nickname))
+        .map((peer) => ({
+          peerId: peer.peerId,
+          nickname: peer.nickname,
+          mine: false
+        }))
+    ];
+    this.postState();
+  }
+
+  closeUdpSocket() {
+    if (this.udpHeartbeat) {
+      clearInterval(this.udpHeartbeat);
+    }
+    this.udpHeartbeat = undefined;
+    if (this.udpSocket) {
+      try {
+        this.udpSocket.close();
+      } catch (error) {
+        logError('UDP socket close failed', error);
+      }
+    }
+    this.udpSocket = undefined;
+    this.udpPeers.clear();
   }
 
   receiveMessage(payload) {
@@ -738,6 +981,9 @@ class DevTalkViewProvider {
   }
 
   canSend() {
+    if (this.transport === 'udp') {
+      return Boolean(this.joined && this.connected && this.nickname && this.udpSocket);
+    }
     return Boolean(this.joined && this.connected && this.nickname && this.channel && this.config.ready);
   }
 
@@ -752,7 +998,9 @@ class DevTalkViewProvider {
       status: this.status,
       needsNickname: !this.nickname,
       joined: this.joined,
+      transport: this.transport,
       canSend: this.canSend(),
+      canUpload: this.canSend() && this.transport === 'supabase',
       maxFileSize: MAX_FILE_SIZE,
       theme: getTheme(),
       colorMode: getColorMode(),
@@ -889,6 +1137,47 @@ function safeFileName(name) {
     .trim();
 
   return cleaned.slice(0, 120) || 'file';
+}
+
+function getUdpSendAddresses() {
+  const addresses = new Set([UDP_MULTICAST_ADDRESS, '255.255.255.255']);
+  const interfaces = os.networkInterfaces();
+
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries || []) {
+      if (entry.family !== 'IPv4' || entry.internal || !entry.address || !entry.netmask) {
+        continue;
+      }
+
+      const address = ipv4ToNumber(entry.address);
+      const netmask = ipv4ToNumber(entry.netmask);
+      if (address === undefined || netmask === undefined) {
+        continue;
+      }
+
+      addresses.add(numberToIpv4((address & netmask) | (~netmask >>> 0)));
+    }
+  }
+
+  return Array.from(addresses);
+}
+
+function ipv4ToNumber(value) {
+  const parts = String(value).split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return undefined;
+  }
+
+  return (((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3]) >>> 0;
+}
+
+function numberToIpv4(value) {
+  return [
+    (value >>> 24) & 255,
+    (value >>> 16) & 255,
+    (value >>> 8) & 255,
+    value & 255
+  ].join('.');
 }
 
 function normalizeAttachment(attachment) {
@@ -1405,7 +1694,7 @@ function getWebviewHtml(webview) {
       joinButton.disabled = !state.nickname;
       input.disabled = !state.canSend;
       sendButton.disabled = !state.canSend;
-      attachButton.disabled = !state.canSend;
+      attachButton.disabled = !state.canUpload;
       messagesEl.textContent = '';
 
       if (!state.messages || state.messages.length === 0) {

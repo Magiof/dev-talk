@@ -2,7 +2,7 @@
 
 [한국어](README.ko.md)
 
-DevTalk is a small team chat view for VS Code and Cursor. It lives in the Explorer sidebar, asks each person for a chat name on first use, and lets you manually join or leave the shared room before sending messages through Supabase Realtime.
+DevTalk is a small team chat view for VS Code and Cursor. It lives in the Explorer sidebar, asks each person for a chat name on first use, and lets you manually join or leave through either Supabase Realtime or same-LAN UDP chat.
 
 ## Features
 
@@ -11,6 +11,7 @@ DevTalk is a small team chat view for VS Code and Cursor. It lives in the Explor
 - Theme-aware Webview UI
 - First-run chat name setup
 - Manual Join and Leave controls
+- Join through Supabase Realtime or local UDP LAN mode
 - Korean IME-safe Enter handling
 - Unread message badge, capped at 999
 - Unread marker showing where new messages began
@@ -44,6 +45,13 @@ with check (
 ```
 
 The extension enforces a 5 MB file limit before upload. Keep Supabase keys out of the public repository.
+
+## Join Modes
+
+When you click Join in the extension, DevTalk asks whether to connect through Supabase or UDP LAN.
+
+- Supabase uses your configured Supabase Realtime room and supports file uploads.
+- UDP LAN works on the same local network without Supabase setup. It supports text chat and online presence, but not file uploads.
 
 ## Install
 

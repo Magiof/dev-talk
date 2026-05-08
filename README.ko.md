@@ -1,6 +1,6 @@
 # DevTalk
 
-DevTalk는 VS Code와 Cursor의 Explorer 사이드바에서 사용할 수 있는 작은 팀 채팅 도구입니다. 처음 실행할 때 이름을 입력하고, 사용자가 직접 입장하거나 나간 뒤 Supabase Realtime을 통해 같은 방에 있는 사람들과 메시지를 주고받습니다.
+DevTalk는 VS Code와 Cursor의 Explorer 사이드바에서 사용할 수 있는 작은 팀 채팅 도구입니다. 처음 실행할 때 이름을 입력하고, 사용자가 Supabase Realtime 또는 같은 LAN의 UDP 채팅으로 직접 입장하거나 나간 뒤 메시지를 주고받습니다.
 
 ## 기능
 
@@ -9,6 +9,7 @@ DevTalk는 VS Code와 Cursor의 Explorer 사이드바에서 사용할 수 있는
 - IDE 테마를 따라가는 Webview UI
 - 첫 실행 시 이름 설정
 - 수동 입장과 나가기 버튼
+- Supabase Realtime 또는 로컬 UDP LAN 입장 모드
 - 한글 IME Enter 중복 전송 방지
 - 읽지 않은 메시지 배지, 최대 999 표시
 - 어디부터 새 메시지인지 보여주는 읽음 경계선
@@ -48,6 +49,13 @@ with check (
 ```
 
 확장과 CLI는 업로드 전에 파일 크기를 5MB로 제한합니다. Supabase 키는 public 저장소에 커밋하지 마세요.
+
+## 입장 모드
+
+확장에서 Join을 누르면 Supabase 또는 UDP LAN 중 어디로 접속할지 고를 수 있습니다.
+
+- Supabase는 설정된 Supabase Realtime 방을 사용하고 파일 업로드를 지원합니다.
+- UDP LAN은 Supabase 설정 없이 같은 로컬 네트워크에서 동작합니다. 텍스트 채팅과 온라인 표시를 지원하지만 파일 업로드는 지원하지 않습니다.
 
 ## 설치
 
