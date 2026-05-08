@@ -431,8 +431,9 @@ function createChatUi({ onLine, onClose }) {
     const start = Math.max(0, columns - visibleLength(label) - 1);
 
     process.stdout.write('\x1b7');
+    readline.cursorTo(process.stdout, 0, 0);
+    readline.clearLine(process.stdout, 0);
     readline.cursorTo(process.stdout, start, 0);
-    readline.clearLine(process.stdout, 1);
     process.stdout.write(label);
     process.stdout.write('\x1b8');
   }
