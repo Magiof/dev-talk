@@ -60,7 +60,16 @@ class DevTalkViewProvider {
     webviewView.webview.options = {
       enableScripts: true
     };
-    webviewView.webview.html = getWebviewHtml(webviewView.webview);
+
+    webviewView.webview.html = getFallbackHtml('Loading DevTalk...');
+
+    try {
+      webviewView.webview.html = getWebviewHtml(webviewView.webview);
+    } catch (error) {
+      this.status = 'DevTalk view failed to load: ' + error.message;
+      webviewView.webview.html = getFallbackHtml(this.status);
+      return;
+    }
 
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
@@ -90,10 +99,20 @@ class DevTalkViewProvider {
       }
     });
 
-    this.updateBadge();
-    this.postState();
-    setTimeout(() => this.postState(), 0);
-    this.initializeView();
+    try {
+      this.updateBadge();
+      this.postState();
+      setTimeout(() => {
+        this.postState();
+        this.initializeView().catch((error) => {
+          this.status = 'DevTalk setup failed: ' + error.message;
+          this.postState();
+        });
+      }, 0);
+    } catch (error) {
+      this.status = 'DevTalk initialization failed: ' + error.message;
+      webviewView.webview.html = getFallbackHtml(this.status);
+    }
   }
 
   async initializeView() {
@@ -711,6 +730,38 @@ function normalizeAttachment(attachment) {
     path: String(attachment.path || ''),
     isImage: Boolean(attachment.isImage || type.startsWith('image/'))
   };
+}
+
+function getFallbackHtml(message) {
+  const escaped = String(message || 'Loading DevTalk...')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      margin: 0;
+      padding: 12px;
+      color: var(--vscode-foreground);
+      background: var(--vscode-sideBar-background);
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+    }
+    .title { font-weight: 600; margin-bottom: 6px; }
+    .status { color: var(--vscode-descriptionForeground); line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <div class="title">DevTalk</div>
+  <div class="status">${escaped}</div>
+</body>
+</html>`;
 }
 
 function getWebviewHtml(webview) {
