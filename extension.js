@@ -1,5 +1,8 @@
 const vscode = require('vscode');
 const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
 const WebSocket = require('ws');
 
@@ -10,6 +13,8 @@ if (typeof globalThis.WebSocket === 'undefined') {
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const DEFAULT_BUCKET = 'devtalk-files';
 const ROOM_ID = 'general';
+const CONFIG_DIR = path.join(os.homedir(), '.devtalk');
+const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
 function activate(context) {
   const provider = new DevTalkViewProvider(context);
@@ -41,6 +46,7 @@ class DevTalkViewProvider {
     this.status = 'Connecting to DevTalk...';
     this.nickname = getNickname(context);
     this.config = getSupabaseConfig();
+    this.promptingConfig = false;
 
     if (!this.nickname) {
       this.status = 'Enter your name to start.';
@@ -84,9 +90,33 @@ class DevTalkViewProvider {
       }
     });
 
-    this.connect();
     this.updateBadge();
     this.postState();
+    setTimeout(() => this.postState(), 0);
+    this.initializeView();
+  }
+
+  async initializeView() {
+    if (!hasSharedConfig()) {
+      const configured = await this.ensureSharedConfig();
+      if (!configured) {
+        return;
+      }
+    }
+
+    this.reloadSettings();
+    this.connect();
+    this.postState();
+  }
+
+  reloadSettings() {
+    this.nickname = getNickname(this.context);
+    this.config = getSupabaseConfig();
+    if (!this.nickname) {
+      this.status = 'Enter your name to start.';
+    } else if (!this.config.ready) {
+      this.status = this.config.message;
+    }
   }
 
   isViewVisible() {
@@ -182,9 +212,34 @@ class DevTalkViewProvider {
 
     this.nickname = nickname;
     this.context.globalState.update('nickname', nickname);
+    updateSharedConfig({ nickname }).catch(() => {});
     this.status = 'Connecting to DevTalk...';
     this.connect();
     this.postState();
+  }
+
+  async ensureSharedConfig() {
+    if (this.promptingConfig || hasSharedConfig()) {
+      return true;
+    }
+
+    this.promptingConfig = true;
+    this.status = 'DevTalk setup required.';
+    this.postState();
+
+    try {
+      const configured = await this.configureSettings({
+        titlePrefix: 'DevTalk first setup',
+        successMessage: 'DevTalk terminal config saved.'
+      });
+      if (!configured) {
+        this.status = 'DevTalk setup was canceled. Run /config or reopen DevTalk to set it up.';
+        this.postState();
+      }
+      return configured;
+    } finally {
+      this.promptingConfig = false;
+    }
   }
 
   async sendChat(rawText) {
@@ -252,6 +307,7 @@ class DevTalkViewProvider {
     await vscode.workspace
       .getConfiguration('devtalk')
       .update('theme', nextTheme, vscode.ConfigurationTarget.Global);
+    await updateSharedConfig({ theme: nextTheme });
     this.status = 'Theme changed to ' + nextTheme + '.';
     this.postState();
   }
@@ -263,48 +319,49 @@ class DevTalkViewProvider {
     await vscode.workspace
       .getConfiguration('devtalk')
       .update('colorMode', nextValue, vscode.ConfigurationTarget.Global);
+    await updateSharedConfig({ colorMode: nextValue });
     this.status = 'Color mode ' + (nextValue ? 'on' : 'off') + '.';
     this.postState();
   }
 
-  async configureSettings() {
+  async configureSettings(options = {}) {
     const config = vscode.workspace.getConfiguration('devtalk');
     const current = getSupabaseConfig();
     const nickname = await vscode.window.showInputBox({
-      title: 'DevTalk nickname',
+      title: options.titlePrefix ? options.titlePrefix + ': nickname' : 'DevTalk nickname',
       value: this.nickname || '',
       prompt: 'Shown to other people in DevTalk.'
     });
     if (nickname === undefined) {
-      return;
+      return false;
     }
 
     const supabaseUrl = await vscode.window.showInputBox({
-      title: 'DevTalk Supabase URL',
+      title: options.titlePrefix ? options.titlePrefix + ': Supabase URL' : 'DevTalk Supabase URL',
       value: current.url || '',
       prompt: 'Example: https://your-project.supabase.co'
     });
     if (supabaseUrl === undefined) {
-      return;
+      return false;
     }
 
     const anonKey = await vscode.window.showInputBox({
-      title: 'DevTalk Supabase anon key',
+      title: options.titlePrefix ? options.titlePrefix + ': Supabase anon key' : 'DevTalk Supabase anon key',
       value: current.anonKey || '',
       password: true,
       prompt: 'Use anon/publishable key only. Never use service role key.'
     });
     if (anonKey === undefined) {
-      return;
+      return false;
     }
 
     const bucket = await vscode.window.showInputBox({
-      title: 'DevTalk Storage bucket',
+      title: options.titlePrefix ? options.titlePrefix + ': Storage bucket' : 'DevTalk Storage bucket',
       value: current.bucket || DEFAULT_BUCKET,
       prompt: 'Supabase Storage bucket for files and images.'
     });
     if (bucket === undefined) {
-      return;
+      return false;
     }
 
     const cleanNickname = nickname.trim().slice(0, 32);
@@ -316,10 +373,19 @@ class DevTalkViewProvider {
     await config.update('supabaseUrl', supabaseUrl.trim(), vscode.ConfigurationTarget.Global);
     await config.update('supabaseAnonKey', anonKey.trim(), vscode.ConfigurationTarget.Global);
     await config.update('storageBucket', bucket.trim() || DEFAULT_BUCKET, vscode.ConfigurationTarget.Global);
+    await saveSharedConfig({
+      url: supabaseUrl.trim(),
+      anonKey: anonKey.trim(),
+      bucket: bucket.trim() || DEFAULT_BUCKET,
+      nickname: cleanNickname || this.nickname || '',
+      theme: getTheme(),
+      colorMode: getColorMode()
+    });
 
     await this.reconnect();
-    this.status = 'DevTalk configuration updated.';
+    this.status = options.successMessage || 'DevTalk configuration updated.';
     this.postState();
+    return true;
   }
 
   async reconnect() {
@@ -500,31 +566,36 @@ class DevTalkViewProvider {
 }
 
 function getNickname(context) {
-  const configured = vscode.workspace
-    .getConfiguration('devtalk')
-    .get('nickname', '');
-  const configuredName = typeof configured === 'string' ? configured.trim() : '';
+  const configuredName = getConfiguredString('nickname');
   const saved = context.globalState.get('nickname', '');
   const savedName = typeof saved === 'string' ? saved.trim() : '';
+  const shared = loadSharedConfig();
+  const sharedName = typeof shared.nickname === 'string' ? shared.nickname.trim() : '';
 
-  return configuredName || savedName;
+  return configuredName || savedName || sharedName;
 }
 
 function getTheme() {
-  const theme = vscode.workspace
-    .getConfiguration('devtalk')
-    .get('theme', 'default');
+  const shared = loadSharedConfig();
+  const theme = getConfiguredString('theme') || shared.theme || 'default';
 
   return theme === 'work' ? 'work' : 'default';
 }
 
 function getColorMode() {
-  return Boolean(vscode.workspace
-    .getConfiguration('devtalk')
-    .get('colorMode', true));
+  const shared = loadSharedConfig();
+  const configured = getConfiguredValue('colorMode');
+  return normalizeColorMode(configured === undefined ? shared.colorMode : configured, true);
 }
 
 function normalizeColorMode(value, defaultValue = true) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (value === undefined || value === null || value === '') {
+    return defaultValue;
+  }
+
   const normalized = String(value || '').trim().toLowerCase();
   if (['1', 'true', 'yes', 'y', 'on', 'color', 'colors'].includes(normalized)) {
     return true;
@@ -536,10 +607,10 @@ function normalizeColorMode(value, defaultValue = true) {
 }
 
 function getSupabaseConfig() {
-  const config = vscode.workspace.getConfiguration('devtalk');
-  const url = String(config.get('supabaseUrl', '') || '').trim();
-  const anonKey = String(config.get('supabaseAnonKey', '') || '').trim();
-  const bucket = String(config.get('storageBucket', DEFAULT_BUCKET) || DEFAULT_BUCKET).trim();
+  const shared = loadSharedConfig();
+  const url = (getConfiguredString('supabaseUrl') || String(shared.url || '')).trim();
+  const anonKey = (getConfiguredString('supabaseAnonKey') || String(shared.anonKey || '')).trim();
+  const bucket = (getConfiguredString('storageBucket') || String(shared.bucket || DEFAULT_BUCKET)).trim();
 
   if (!url || !anonKey) {
     return {
@@ -558,6 +629,58 @@ function getSupabaseConfig() {
     anonKey,
     bucket: bucket || DEFAULT_BUCKET
   };
+}
+
+function getConfiguredString(key) {
+  const value = getConfiguredValue(key);
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function getConfiguredValue(key) {
+  const inspected = vscode.workspace
+    .getConfiguration('devtalk')
+    .inspect(key);
+
+  if (!inspected) {
+    return undefined;
+  }
+
+  if (inspected.workspaceFolderValue !== undefined) return inspected.workspaceFolderValue;
+  if (inspected.workspaceValue !== undefined) return inspected.workspaceValue;
+  if (inspected.globalValue !== undefined) return inspected.globalValue;
+  return undefined;
+}
+
+function loadSharedConfig() {
+  try {
+    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    return config && typeof config === 'object' ? config : {};
+  } catch {
+    return {};
+  }
+}
+
+function hasSharedConfig() {
+  const config = loadSharedConfig();
+  return Boolean(
+    typeof config.url === 'string' &&
+    config.url.trim() &&
+    typeof config.anonKey === 'string' &&
+    config.anonKey.trim()
+  );
+}
+
+async function saveSharedConfig(config) {
+  await fs.promises.mkdir(CONFIG_DIR, { mode: 0o700, recursive: true });
+  await fs.promises.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+}
+
+async function updateSharedConfig(patch) {
+  const current = loadSharedConfig();
+  await saveSharedConfig({
+    ...current,
+    ...patch
+  });
 }
 
 function safeFileName(name) {
@@ -843,7 +966,7 @@ function getWebviewHtml(webview) {
       <button type="submit">Start Chat</button>
     </form>
   </section>
-  <main id="chat" class="chat" hidden>
+  <main id="chat" class="chat">
     <header class="header">
       <div class="title">DevTalk</div>
       <div id="status" class="status">Connecting...</div>

@@ -79,7 +79,9 @@ cursor --install-extension devtalk-0.1.6.vsix
 
 ## 설정
 
-아래 값들은 VS Code/Cursor 사용자 설정에 넣습니다. 실제 값은 Git에 커밋하지 마세요.
+DevTalk는 터미널 CLI와 확장이 함께 쓰는 설정을 `~/.devtalk/config.json`에 저장합니다. CLI에서 이미 최초 설정을 했다면 VS Code/Cursor 확장이 그 설정을 자동으로 사용합니다. 파일이 아직 없다면 DevTalk Activity Bar 아이콘을 클릭했을 때 필요한 값을 입력할 수 있습니다.
+
+아래 값들은 VS Code/Cursor 사용자 설정에 직접 넣을 수도 있습니다. 실제 값은 Git에 커밋하지 마세요.
 
 ```json
 {
@@ -90,7 +92,7 @@ cursor --install-extension devtalk-0.1.6.vsix
 }
 ```
 
-업무용으로 조용하고 촘촘한 화면을 쓰고 싶으면 이렇게 설정합니다. DevTalk 입력창에서 `/theme` 또는 `/theme work`를 입력해도 테마를 바꿀 수 있고, `/color-mode`로 화자별 파스텔 형광펜 표시를 켜고 끌 수 있습니다. `/config`를 입력하면 닉네임과 Supabase 설정을 다시 변경할 수 있습니다.
+업무용으로 조용하고 촘촘한 화면을 쓰고 싶으면 이렇게 설정합니다. DevTalk 입력창에서 `/theme` 또는 `/theme work`를 입력해도 테마를 바꿀 수 있고, `/color-mode`로 화자별 파스텔 형광펜 표시를 켜고 끌 수 있습니다. `/config`를 입력하면 닉네임과 Supabase 설정을 다시 변경할 수 있습니다. 확장에서 변경한 설정은 `~/.devtalk/config.json`에도 저장되어 CLI에서 재사용할 수 있습니다.
 
 ```json
 {

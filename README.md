@@ -75,7 +75,9 @@ cursor --install-extension devtalk-0.1.6.vsix
 
 ## Settings
 
-Set these in VS Code/Cursor user settings. Do not commit real values.
+DevTalk stores shared terminal and extension settings at `~/.devtalk/config.json`. If you already ran the CLI setup, the VS Code/Cursor extension uses that config automatically. If the file does not exist, click the DevTalk activity bar icon and enter the values when prompted.
+
+You can also set these in VS Code/Cursor user settings. Do not commit real values.
 
 ```json
 {
@@ -86,7 +88,7 @@ Set these in VS Code/Cursor user settings. Do not commit real values.
 }
 ```
 
-Use `"devtalk.theme": "work"` for a quieter, denser view that looks more like work logs than chat. You can also type `/theme` or `/theme work` in DevTalk to switch themes. Type `/color-mode` to toggle per-speaker pastel highlights, and `/config` to edit nickname and Supabase settings from the chat view.
+Use `"devtalk.theme": "work"` for a quieter, denser view that looks more like work logs than chat. You can also type `/theme` or `/theme work` in DevTalk to switch themes. Type `/color-mode` to toggle per-speaker pastel highlights, and `/config` to edit nickname and Supabase settings from the chat view. The extension writes updated setup values back to `~/.devtalk/config.json` so the CLI can reuse them.
 
 To use a fixed nickname without the first-run prompt, also set:
 
