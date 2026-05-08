@@ -395,14 +395,22 @@ function createChatUi({ onLine, onClose }) {
     return '─'.repeat(Math.max(20, process.stdout.columns || 80));
   }
 
+  function statusLine() {
+    const columns = process.stdout.columns || 80;
+    return truncateVisible('DevTalk · ' + presenceLabel, Math.max(12, columns));
+  }
+
   function drawInputBlock() {
-    drawPresence();
+    process.stdout.write(statusLine() + '\n');
     process.stdout.write(divider() + '\n');
     process.stdout.write('> ' + input);
     moveCursorToInputPosition();
   }
 
   function clearInputBlock() {
+    readline.cursorTo(process.stdout, 0);
+    readline.clearLine(process.stdout, 0);
+    readline.moveCursor(process.stdout, 0, -1);
     readline.cursorTo(process.stdout, 0);
     readline.clearLine(process.stdout, 0);
     readline.moveCursor(process.stdout, 0, -1);
@@ -418,31 +426,21 @@ function createChatUi({ onLine, onClose }) {
   }
 
   function redrawInputLine() {
-    drawPresence();
     readline.cursorTo(process.stdout, 0);
     readline.clearLine(process.stdout, 0);
     process.stdout.write('> ' + input);
     moveCursorToInputPosition();
   }
 
-  function drawPresence() {
-    const columns = process.stdout.columns || 80;
-    const label = truncateVisible(presenceLabel, Math.max(12, columns - 2));
-    const start = Math.max(0, columns - visibleLength(label) - 1);
-
-    process.stdout.write('\x1b7');
-    readline.cursorTo(process.stdout, 0, 0);
-    readline.clearLine(process.stdout, 0);
-    readline.cursorTo(process.stdout, start, 0);
-    process.stdout.write(label);
-    process.stdout.write('\x1b8');
+  function redrawInputBlock() {
+    clearInputBlock();
+    drawInputBlock();
   }
 
   function setPresenceLabel(label) {
     presenceLabel = label || '0 online';
     if (!closed) {
-      drawPresence();
-      moveCursorToInputPosition();
+      redrawInputBlock();
     }
   }
 
@@ -483,7 +481,7 @@ function createChatUi({ onLine, onClose }) {
     closed = true;
     process.stdin.setRawMode(false);
     process.stdin.off('keypress', onKeypress);
-    process.stdout.off('resize', drawPresence);
+    process.stdout.off('resize', redrawInputBlock);
     clearInputBlock();
     onClose();
   }
@@ -564,7 +562,7 @@ function createChatUi({ onLine, onClose }) {
   }
 
   process.stdin.on('keypress', onKeypress);
-  process.stdout.on('resize', drawPresence);
+  process.stdout.on('resize', redrawInputBlock);
 
   return {
     start() {
