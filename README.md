@@ -2,7 +2,7 @@
 
 [한국어](README.ko.md)
 
-DevTalk is a small team chat view for VS Code and Cursor. It lives in the activity bar, asks each person for a chat name on first use, and sends messages through Supabase Realtime.
+DevTalk is a small team chat view for VS Code and Cursor. It lives in the Explorer sidebar, asks each person for a chat name on first use, and lets you manually join or leave the shared room before sending messages through Supabase Realtime.
 
 ## Features
 
@@ -10,6 +10,7 @@ DevTalk is a small team chat view for VS Code and Cursor. It lives in the activi
 - VS Code and Cursor support through VSIX installation
 - Theme-aware Webview UI
 - First-run chat name setup
+- Manual Join and Leave controls
 - Korean IME-safe Enter handling
 - Unread message badge, capped at 999
 - Unread marker showing where new messages began
@@ -75,7 +76,7 @@ cursor --install-extension devtalk-0.1.6.vsix
 
 ## Settings
 
-DevTalk stores shared terminal and extension settings at `~/.devtalk/config.json`. If you already ran the CLI setup, the VS Code/Cursor extension uses that config automatically. If the file does not exist, click the DevTalk activity bar icon and enter the values when prompted.
+DevTalk stores shared terminal and extension settings at `~/.devtalk/config.json`. If you already ran the CLI setup, the VS Code/Cursor extension uses that config automatically. If the file does not exist, click Join in the DevTalk Explorer sidebar view and enter the values when prompted.
 
 You can also set these in VS Code/Cursor user settings. Do not commit real values.
 
@@ -88,7 +89,7 @@ You can also set these in VS Code/Cursor user settings. Do not commit real value
 }
 ```
 
-Use `"devtalk.theme": "work"` for a quieter, denser view that looks more like work logs than chat. You can also type `/theme` or `/theme work` in DevTalk to switch themes. Type `/color-mode` to toggle per-speaker pastel highlights, and `/config` to edit nickname and Supabase settings from the chat view. The extension writes updated setup values back to `~/.devtalk/config.json` so the CLI can reuse them.
+Use `"devtalk.theme": "work"` for a quieter, denser view that looks more like work logs than chat. You can also type `/theme` or `/theme work` in DevTalk to switch themes after joining. Type `/color-mode` to toggle per-speaker pastel highlights, and `/config` to edit nickname and Supabase settings from the chat view. The extension writes updated setup values back to `~/.devtalk/config.json` so the CLI can reuse them.
 
 To use a fixed nickname without the first-run prompt, also set:
 

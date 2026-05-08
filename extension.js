@@ -77,10 +77,12 @@ class DevTalkViewProvider {
     this.unreadCount = 0;
     this.unreadStartMessageId = undefined;
     this.readMarkerMessageId = undefined;
-    this.status = 'Connecting to DevTalk...';
+    this.status = 'Ready to join DevTalk.';
     this.nickname = getNickname(context);
     this.config = getSupabaseConfig();
     this.promptingConfig = false;
+    this.joined = false;
+    this.connected = false;
 
     if (!this.nickname) {
       this.status = 'Enter your name to start.';
@@ -120,6 +122,20 @@ class DevTalkViewProvider {
       if (message.type === 'setNickname' && typeof message.nickname === 'string') {
         this.setNickname(message.nickname);
       }
+      if (message.type === 'join') {
+        this.joinChat().catch((error) => {
+          logError('join failed', error);
+          this.status = 'DevTalk join failed: ' + error.message;
+          this.postState();
+        });
+      }
+      if (message.type === 'leave') {
+        this.leaveChat().catch((error) => {
+          logError('leave failed', error);
+          this.status = 'DevTalk leave failed: ' + error.message;
+          this.postState();
+        });
+      }
       if (message.type === 'send' && typeof message.text === 'string') {
         this.sendChat(message.text);
       }
@@ -144,11 +160,7 @@ class DevTalkViewProvider {
       setTimeout(() => {
         log('deferred initializeView scheduled');
         this.postState();
-        this.initializeView().catch((error) => {
-          logError('initializeView failed', error);
-          this.status = 'DevTalk setup failed: ' + error.message;
-          this.postState();
-        });
+        this.initializeView();
       }, 0);
     } catch (error) {
       logError('resolveWebviewView failed', error);
@@ -157,19 +169,9 @@ class DevTalkViewProvider {
     }
   }
 
-  async initializeView() {
+  initializeView() {
     log('initializeView started');
-    if (!hasSharedConfig()) {
-      log('shared config missing, prompting first setup');
-      const configured = await this.ensureSharedConfig();
-      if (!configured) {
-        log('first setup canceled');
-        return;
-      }
-    }
-
     this.reloadSettings();
-    this.connect();
     this.postState();
     log('initializeView finished');
   }
@@ -181,6 +183,8 @@ class DevTalkViewProvider {
       this.status = 'Enter your name to start.';
     } else if (!this.config.ready) {
       this.status = this.config.message;
+    } else if (!this.joined) {
+      this.status = 'Ready to join DevTalk.';
     }
   }
 
@@ -237,6 +241,8 @@ class DevTalkViewProvider {
       return;
     }
 
+    this.joined = true;
+
     let createClient;
     try {
       createClient = getCreateSupabaseClient();
@@ -276,17 +282,25 @@ class DevTalkViewProvider {
 
     this.channel.subscribe((status) => {
       log('Supabase channel status: ' + status);
+      if (!this.joined && status !== 'SUBSCRIBED') {
+        return;
+      }
       if (status === 'SUBSCRIBED') {
+        this.connected = true;
         this.status = 'Connected to DevTalk room ' + ROOM_ID;
         this.trackPresence();
         this.updateParticipants();
       } else if (status === 'CHANNEL_ERROR') {
+        this.connected = false;
         this.status = 'DevTalk connection failed. Check Supabase settings.';
       } else if (status === 'TIMED_OUT') {
+        this.connected = false;
         this.status = 'DevTalk connection timed out.';
       } else if (status === 'CLOSED') {
+        this.connected = false;
         this.status = 'DevTalk connection closed.';
       } else {
+        this.connected = false;
         this.status = 'Connecting to DevTalk...';
       }
       this.postState();
@@ -325,10 +339,69 @@ class DevTalkViewProvider {
     this.nickname = nickname;
     this.context.globalState.update('nickname', nickname);
     updateSharedConfig({ nickname }).catch(() => {});
-    this.status = 'Connecting to DevTalk...';
-    this.connect();
-    this.trackPresence();
+    this.status = 'Joining DevTalk...';
+    this.joinChat().catch((error) => {
+      logError('join after nickname failed', error);
+      this.status = 'DevTalk join failed: ' + error.message;
+      this.postState();
+    });
     this.postState();
+  }
+
+  async joinChat() {
+    this.reloadSettings();
+    if (!this.nickname) {
+      this.status = 'Enter your name to start.';
+      this.postState();
+      return;
+    }
+
+    if (!hasSharedConfig()) {
+      log('shared config missing, prompting setup before join');
+      const configured = await this.ensureSharedConfig();
+      if (!configured) {
+        log('join canceled during setup');
+        this.joined = false;
+        return;
+      }
+    }
+
+    this.reloadSettings();
+    if (!this.config.ready) {
+      this.joined = false;
+      this.status = this.config.message;
+      this.postState();
+      return;
+    }
+
+    if (this.channel) {
+      this.joined = true;
+      this.status = this.connected ? 'Connected to DevTalk room ' + ROOM_ID : 'Connecting to DevTalk...';
+      this.trackPresence();
+      this.updateParticipants();
+      this.postState();
+      return;
+    }
+
+    this.joined = true;
+    this.status = 'Connecting to DevTalk...';
+    this.postState();
+    this.connect();
+  }
+
+  async leaveChat() {
+    log('leaveChat started');
+    this.joined = false;
+    if (this.channel && this.supabase) {
+      await this.supabase.removeChannel(this.channel);
+    }
+    this.channel = undefined;
+    this.supabase = undefined;
+    this.connected = false;
+    this.participants = [];
+    this.status = 'Left DevTalk. Join when you are ready.';
+    this.postState();
+    log('leaveChat finished');
   }
 
   async ensureSharedConfig() {
@@ -365,9 +438,11 @@ class DevTalkViewProvider {
       return;
     }
     if (!this.canSend()) {
-      this.status = this.config.ready
+      this.status = this.joined && this.config.ready
         ? 'DevTalk is still connecting.'
-        : this.config.message;
+        : this.config.ready
+          ? 'Join DevTalk to send messages.'
+          : this.config.message;
       this.postState();
       return;
     }
@@ -496,8 +571,10 @@ class DevTalkViewProvider {
     });
 
     await this.reconnect();
-    this.trackPresence();
-    this.status = options.successMessage || 'DevTalk configuration updated.';
+    if (this.joined) {
+      this.trackPresence();
+    }
+    this.status = options.successMessage || (this.joined ? 'DevTalk configuration updated.' : 'DevTalk configuration updated. Join when you are ready.');
     this.postState();
     return true;
   }
@@ -508,16 +585,21 @@ class DevTalkViewProvider {
     }
     this.channel = undefined;
     this.supabase = undefined;
+    this.connected = false;
     this.participants = [];
     this.config = getSupabaseConfig();
-    this.connect();
+    if (this.joined) {
+      this.connect();
+    }
   }
 
   async uploadFile(file) {
     if (!this.canSend()) {
-      this.status = this.config.ready
+      this.status = this.joined && this.config.ready
         ? 'DevTalk is still connecting.'
-        : this.config.message;
+        : this.config.ready
+          ? 'Join DevTalk to send files.'
+          : this.config.message;
       this.postState();
       return;
     }
@@ -656,7 +738,7 @@ class DevTalkViewProvider {
   }
 
   canSend() {
-    return Boolean(this.nickname && this.channel && this.config.ready);
+    return Boolean(this.joined && this.connected && this.nickname && this.channel && this.config.ready);
   }
 
   postState() {
@@ -669,6 +751,7 @@ class DevTalkViewProvider {
       nickname: this.nickname,
       status: this.status,
       needsNickname: !this.nickname,
+      joined: this.joined,
       canSend: this.canSend(),
       maxFileSize: MAX_FILE_SIZE,
       theme: getTheme(),
@@ -935,9 +1018,15 @@ function getWebviewHtml(webview) {
       gap: 8px;
     }
     .title { font-size: 12px; font-weight: 600; line-height: 1.3; }
-    .presence {
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
       justify-self: end;
-      max-width: 52%;
+      min-width: 0;
+    }
+    .presence {
+      max-width: 92px;
       padding: 2px 6px;
       border-radius: 999px;
       color: var(--vscode-badge-foreground);
@@ -1071,6 +1160,19 @@ function getWebviewHtml(webview) {
       cursor: not-allowed;
       opacity: 0.55;
     }
+    .secondary-button {
+      min-width: 0;
+      height: 22px;
+      padding: 0 7px;
+      color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+      background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+      font-size: 10px;
+      line-height: 20px;
+    }
+    .secondary-button:hover {
+      background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
+    }
+    .secondary-button[hidden] { display: none; }
     .file-input { display: none; }
 
     body.theme-work {
@@ -1081,6 +1183,12 @@ function getWebviewHtml(webview) {
     .theme-work .presence {
       padding: 1px 5px;
       font-size: 9px;
+    }
+    .theme-work .secondary-button {
+      height: 20px;
+      padding: 0 6px;
+      font-size: 9px;
+      line-height: 18px;
     }
     .theme-work .status { font-size: 10px; }
     .theme-work .messages { padding: 6px 8px; }
@@ -1166,7 +1274,11 @@ function getWebviewHtml(webview) {
     <header class="header">
       <div class="header-top">
         <div class="title">DevTalk</div>
-        <div id="presence" class="presence" title="Online">0 online</div>
+        <div class="header-actions">
+          <div id="presence" class="presence" title="Online">0 online</div>
+          <button id="joinButton" class="secondary-button" type="button">Join</button>
+          <button id="leaveButton" class="secondary-button" type="button" hidden>Leave</button>
+        </div>
       </div>
       <div id="status" class="status">Connecting...</div>
     </header>
@@ -1188,6 +1300,8 @@ function getWebviewHtml(webview) {
     const messagesEl = document.getElementById('messages');
     const statusEl = document.getElementById('status');
     const presenceEl = document.getElementById('presence');
+    const joinButton = document.getElementById('joinButton');
+    const leaveButton = document.getElementById('leaveButton');
     const form = document.getElementById('composer');
     const input = document.getElementById('input');
     const sendButton = document.getElementById('sendButton');
@@ -1286,6 +1400,9 @@ function getWebviewHtml(webview) {
       const names = participants.map((item) => item.mine ? 'You' : item.nickname).filter(Boolean);
       presenceEl.textContent = participants.length + ' online';
       presenceEl.title = names.length ? 'Online: ' + names.join(', ') : 'No one online';
+      joinButton.hidden = Boolean(state.joined);
+      leaveButton.hidden = !state.joined;
+      joinButton.disabled = !state.nickname;
       input.disabled = !state.canSend;
       sendButton.disabled = !state.canSend;
       attachButton.disabled = !state.canSend;
@@ -1359,6 +1476,14 @@ function getWebviewHtml(webview) {
         return;
       }
       vscode.postMessage({ type: 'setNickname', nickname });
+    });
+
+    joinButton.addEventListener('click', () => {
+      vscode.postMessage({ type: 'join' });
+    });
+
+    leaveButton.addEventListener('click', () => {
+      vscode.postMessage({ type: 'leave' });
     });
 
     form.addEventListener('submit', (event) => {

@@ -2,7 +2,8 @@
   "name": "devtalk",
   "displayName": "DevTalk",
   "description": "A tiny team chat view for VS Code and Cursor.",
-  "version": "0.1.19",
+  "icon": "media/devtalk-icon.png",
+  "version": "0.1.20",
   "publisher": "magiof",
   "engines": {
     "vscode": "^1.90.0"
@@ -25,20 +26,11 @@
     "@vscode/vsce": "^3.2.1"
   },
   "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "devtalk",
-          "title": "DevTalk",
-          "icon": "media/chat.svg"
-        }
-      ]
-    },
     "views": {
-      "devtalk": [
+      "explorer": [
         {
           "id": "devtalkView",
-          "name": "Chat",
+          "name": "DevTalk",
           "type": "webview"
         }
       ]
