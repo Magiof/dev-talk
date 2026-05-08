@@ -64,7 +64,8 @@ function getConfig(saved = {}) {
     bucket: getArg('bucket') || process.env.DEVTALK_STORAGE_BUCKET || saved.bucket || DEFAULT_BUCKET,
     nickname: getArg('name') || process.env.DEVTALK_NICKNAME || saved.nickname || os.userInfo().username || os.hostname() || 'terminal',
     theme: getArg('theme') || process.env.DEVTALK_THEME || saved.theme || 'default',
-    colorMode: normalizeColorMode(getArg('color-mode') || process.env.DEVTALK_COLOR_MODE || saved.colorMode, true)
+    colorMode: normalizeColorMode(getArg('color-mode') || process.env.DEVTALK_COLOR_MODE || saved.colorMode, true),
+    statusLine: normalizeColorMode(getArg('status') || process.env.DEVTALK_STATUS_LINE || saved.statusLine, true)
   };
 }
 
@@ -110,6 +111,7 @@ async function ensureConfig() {
     config.nickname = await ask(rl, 'Nickname', config.nickname || 'terminal');
     config.theme = normalizeTheme(await ask(rl, 'Theme', config.theme || 'default'));
     config.colorMode = normalizeColorMode(await ask(rl, 'Color mode', config.colorMode ? 'on' : 'off'), true);
+    config.statusLine = normalizeColorMode(await ask(rl, 'Status line', config.statusLine ? 'on' : 'off'), true);
   } finally {
     rl.close();
   }
@@ -145,6 +147,7 @@ async function promptConfig(config) {
     config.nickname = await ask(rl, 'Nickname', config.nickname || 'terminal');
     config.theme = normalizeTheme(await ask(rl, 'Theme', config.theme || 'default'));
     config.colorMode = normalizeColorMode(await ask(rl, 'Color mode', config.colorMode ? 'on' : 'off'), true);
+    config.statusLine = normalizeColorMode(await ask(rl, 'Status line', config.statusLine ? 'on' : 'off'), true);
   } finally {
     rl.close();
   }
@@ -173,6 +176,7 @@ function getHelpLines() {
     '  /file <path>   upload a file up to 5 MB',
     '  /theme [name]  switch default/work terminal output',
     '  /color-mode    toggle speaker pastel highlights',
+    '  /status        toggle the bottom status line',
     '  /config        edit saved terminal settings',
     '  /help          show this help',
     '  /quit          exit'
@@ -350,7 +354,7 @@ function truncateVisible(value, width) {
   return text.slice(0, Math.max(0, width - 1)) + '…';
 }
 
-function createChatUi({ onLine, onClose }) {
+function createChatUi({ onLine, onClose, statusLineEnabled = true }) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     const rl = readline.createInterface({
       input: process.stdin,
@@ -386,6 +390,7 @@ function createChatUi({ onLine, onClose }) {
   let lastInterruptAt = 0;
   let handling = Promise.resolve();
   let presenceLabel = '0 online';
+  let showStatusLine = Boolean(statusLineEnabled);
 
   readline.emitKeypressEvents(process.stdin);
   process.stdin.setRawMode(true);
@@ -401,7 +406,9 @@ function createChatUi({ onLine, onClose }) {
   }
 
   function drawInputBlock() {
-    process.stdout.write(statusLine() + '\n');
+    if (showStatusLine) {
+      process.stdout.write(statusLine() + '\n');
+    }
     process.stdout.write(divider() + '\n');
     process.stdout.write('> ' + input);
     moveCursorToInputPosition();
@@ -413,9 +420,11 @@ function createChatUi({ onLine, onClose }) {
     readline.moveCursor(process.stdout, 0, -1);
     readline.cursorTo(process.stdout, 0);
     readline.clearLine(process.stdout, 0);
-    readline.moveCursor(process.stdout, 0, -1);
-    readline.cursorTo(process.stdout, 0);
-    readline.clearLine(process.stdout, 0);
+    if (showStatusLine) {
+      readline.moveCursor(process.stdout, 0, -1);
+      readline.cursorTo(process.stdout, 0);
+      readline.clearLine(process.stdout, 0);
+    }
   }
 
   function moveCursorToInputPosition() {
@@ -439,9 +448,24 @@ function createChatUi({ onLine, onClose }) {
 
   function setPresenceLabel(label) {
     presenceLabel = label || '0 online';
-    if (!closed) {
+    if (!closed && showStatusLine) {
       redrawInputBlock();
     }
+  }
+
+  function setStatusLineEnabled(enabled) {
+    if (showStatusLine === Boolean(enabled)) {
+      return;
+    }
+
+    if (!closed) {
+      clearInputBlock();
+      showStatusLine = Boolean(enabled);
+      drawInputBlock();
+      return;
+    }
+
+    showStatusLine = Boolean(enabled);
   }
 
   function writeLines(lines) {
@@ -570,6 +594,7 @@ function createChatUi({ onLine, onClose }) {
     },
     writeLines,
     setPresenceLabel,
+    setStatusLineEnabled,
     close
   };
 }
@@ -587,6 +612,7 @@ async function main() {
   const config = await ensureConfig();
   config.theme = normalizeTheme(config.theme);
   config.colorMode = normalizeColorMode(config.colorMode, true);
+  config.statusLine = normalizeColorMode(config.statusLine, true);
 
   const supabase = createClient(config.url, config.anonKey, {
     auth: {
@@ -738,6 +764,20 @@ async function main() {
     writeLines(['Color mode ' + (config.colorMode ? 'on' : 'off') + '.']);
   }
 
+  async function toggleStatusLine(value) {
+    if (value) {
+      config.statusLine = normalizeColorMode(value, config.statusLine);
+    } else {
+      config.statusLine = !config.statusLine;
+    }
+
+    await saveConfig(config);
+    if (ui && typeof ui.setStatusLineEnabled === 'function') {
+      ui.setStatusLineEnabled(config.statusLine);
+    }
+    writeLines(['Status line ' + (config.statusLine ? 'on' : 'off') + '.']);
+  }
+
   async function sendText(text) {
     await publish({
       id: createId(),
@@ -830,6 +870,10 @@ async function main() {
       await toggleColorMode(text.slice('/color-mode'.length).trim());
       return;
     }
+    if (text === '/status' || text.startsWith('/status ')) {
+      await toggleStatusLine(text.slice('/status'.length).trim());
+      return;
+    }
     if (!ready) {
       writeLines(['DevTalk is still connecting.']);
       return;
@@ -848,6 +892,7 @@ async function main() {
 
   ui = createChatUi({
     onLine: handleLine,
+    statusLineEnabled: config.statusLine,
     async onClose() {
       await supabase.removeChannel(channel);
       process.exit(0);
