@@ -3,27 +3,45 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createClient } = require('@supabase/supabase-js');
-const WebSocket = require('ws');
-
-if (typeof globalThis.WebSocket === 'undefined') {
-  globalThis.WebSocket = WebSocket;
-}
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const DEFAULT_BUCKET = 'devtalk-files';
 const ROOM_ID = 'general';
 const CONFIG_DIR = path.join(os.homedir(), '.devtalk');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
+const output = vscode.window.createOutputChannel('DevTalk');
+let createSupabaseClient;
 
 function activate(context) {
-  const provider = new DevTalkViewProvider(context);
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider('devtalkView', provider)
-  );
+  log('activate started');
+
+  try {
+    const provider = new DevTalkViewProvider(context);
+    log('registering webview provider: devtalkView');
+    context.subscriptions.push(
+      vscode.window.registerWebviewViewProvider('devtalkView', provider)
+    );
+    context.subscriptions.push(output);
+    log('webview provider registered');
+  } catch (error) {
+    logError('activate failed', error);
+    throw error;
+  }
 }
 
-function deactivate() {}
+function deactivate() {
+  log('deactivate');
+}
+
+function log(message) {
+  const timestamp = new Date().toISOString();
+  output.appendLine('[' + timestamp + '] ' + message);
+}
+
+function logError(message, error) {
+  const detail = error && error.stack ? error.stack : String(error && error.message ? error.message : error);
+  log(message + ': ' + detail);
+}
 
 function createId() {
   return typeof crypto.randomUUID === 'function'
@@ -31,14 +49,30 @@ function createId() {
     : crypto.randomBytes(16).toString('hex');
 }
 
+function getCreateSupabaseClient() {
+  if (createSupabaseClient) {
+    return createSupabaseClient;
+  }
+
+  const WebSocket = require('ws');
+  if (typeof globalThis.WebSocket === 'undefined') {
+    globalThis.WebSocket = WebSocket;
+  }
+
+  createSupabaseClient = require('@supabase/supabase-js').createClient;
+  return createSupabaseClient;
+}
+
 class DevTalkViewProvider {
   constructor(context) {
+    log('provider constructor started');
     this.context = context;
     this.peerId = createId();
     this.webviewView = undefined;
     this.supabase = undefined;
     this.channel = undefined;
     this.messages = [];
+    this.participants = [];
     this.seenMessageIds = new Set();
     this.unreadCount = 0;
     this.unreadStartMessageId = undefined;
@@ -53,9 +87,11 @@ class DevTalkViewProvider {
     } else if (!this.config.ready) {
       this.status = this.config.message;
     }
+    log('provider constructor finished: nickname=' + Boolean(this.nickname) + ', configReady=' + Boolean(this.config.ready));
   }
 
   resolveWebviewView(webviewView) {
+    log('resolveWebviewView started');
     this.webviewView = webviewView;
     webviewView.webview.options = {
       enableScripts: true
@@ -64,8 +100,11 @@ class DevTalkViewProvider {
     webviewView.webview.html = getFallbackHtml('Loading DevTalk...');
 
     try {
+      log('getWebviewHtml started');
       webviewView.webview.html = getWebviewHtml(webviewView.webview);
+      log('getWebviewHtml finished');
     } catch (error) {
+      logError('getWebviewHtml failed', error);
       this.status = 'DevTalk view failed to load: ' + error.message;
       webviewView.webview.html = getFallbackHtml(this.status);
       return;
@@ -103,22 +142,28 @@ class DevTalkViewProvider {
       this.updateBadge();
       this.postState();
       setTimeout(() => {
+        log('deferred initializeView scheduled');
         this.postState();
         this.initializeView().catch((error) => {
+          logError('initializeView failed', error);
           this.status = 'DevTalk setup failed: ' + error.message;
           this.postState();
         });
       }, 0);
     } catch (error) {
+      logError('resolveWebviewView failed', error);
       this.status = 'DevTalk initialization failed: ' + error.message;
       webviewView.webview.html = getFallbackHtml(this.status);
     }
   }
 
   async initializeView() {
+    log('initializeView started');
     if (!hasSharedConfig()) {
+      log('shared config missing, prompting first setup');
       const configured = await this.ensureSharedConfig();
       if (!configured) {
+        log('first setup canceled');
         return;
       }
     }
@@ -126,6 +171,7 @@ class DevTalkViewProvider {
     this.reloadSettings();
     this.connect();
     this.postState();
+    log('initializeView finished');
   }
 
   reloadSettings() {
@@ -172,7 +218,9 @@ class DevTalkViewProvider {
   }
 
   connect() {
+    log('connect started');
     if (!this.nickname) {
+      log('connect skipped: nickname missing');
       return;
     }
 
@@ -180,10 +228,22 @@ class DevTalkViewProvider {
     if (!this.config.ready) {
       this.status = this.config.message;
       this.postState();
+      log('connect skipped: config missing');
       return;
     }
 
     if (this.channel) {
+      log('connect skipped: channel already exists');
+      return;
+    }
+
+    let createClient;
+    try {
+      createClient = getCreateSupabaseClient();
+    } catch (error) {
+      logError('Supabase dependency load failed', error);
+      this.status = 'DevTalk extension dependency failed to load: ' + error.message;
+      this.postState();
       return;
     }
 
@@ -199,6 +259,9 @@ class DevTalkViewProvider {
       config: {
         broadcast: {
           self: false
+        },
+        presence: {
+          key: this.peerId
         }
       }
     });
@@ -207,9 +270,16 @@ class DevTalkViewProvider {
       this.receiveMessage(payload);
     });
 
+    this.channel.on('presence', { event: 'sync' }, () => {
+      this.updateParticipants();
+    });
+
     this.channel.subscribe((status) => {
+      log('Supabase channel status: ' + status);
       if (status === 'SUBSCRIBED') {
         this.status = 'Connected to DevTalk room ' + ROOM_ID;
+        this.trackPresence();
+        this.updateParticipants();
       } else if (status === 'CHANNEL_ERROR') {
         this.status = 'DevTalk connection failed. Check Supabase settings.';
       } else if (status === 'TIMED_OUT') {
@@ -223,6 +293,29 @@ class DevTalkViewProvider {
     });
   }
 
+  trackPresence() {
+    if (!this.channel || !this.nickname) {
+      return;
+    }
+
+    this.channel.track({
+      peerId: this.peerId,
+      nickname: this.nickname,
+      onlineAt: new Date().toISOString()
+    });
+  }
+
+  updateParticipants() {
+    if (!this.channel) {
+      this.participants = [];
+      this.postState();
+      return;
+    }
+
+    this.participants = getParticipantsFromPresenceState(this.channel.presenceState(), this.peerId);
+    this.postState();
+  }
+
   setNickname(rawNickname) {
     const nickname = rawNickname.trim().slice(0, 32);
     if (!nickname) {
@@ -234,6 +327,7 @@ class DevTalkViewProvider {
     updateSharedConfig({ nickname }).catch(() => {});
     this.status = 'Connecting to DevTalk...';
     this.connect();
+    this.trackPresence();
     this.postState();
   }
 
@@ -402,6 +496,7 @@ class DevTalkViewProvider {
     });
 
     await this.reconnect();
+    this.trackPresence();
     this.status = options.successMessage || 'DevTalk configuration updated.';
     this.postState();
     return true;
@@ -413,6 +508,7 @@ class DevTalkViewProvider {
     }
     this.channel = undefined;
     this.supabase = undefined;
+    this.participants = [];
     this.config = getSupabaseConfig();
     this.connect();
   }
@@ -577,6 +673,7 @@ class DevTalkViewProvider {
       maxFileSize: MAX_FILE_SIZE,
       theme: getTheme(),
       colorMode: getColorMode(),
+      participants: this.participants,
       unreadCount: this.unreadCount,
       readMarkerMessageId: this.readMarkerMessageId,
       messages: this.messages
@@ -732,6 +829,31 @@ function normalizeAttachment(attachment) {
   };
 }
 
+function getParticipantsFromPresenceState(state, currentPeerId) {
+  const participants = [];
+
+  for (const [key, entries] of Object.entries(state || {})) {
+    const entry = Array.isArray(entries) ? entries[entries.length - 1] : undefined;
+    if (!entry) {
+      continue;
+    }
+
+    const peerId = String(entry.peerId || key);
+    const nickname = String(entry.nickname || 'Someone').trim() || 'Someone';
+    participants.push({
+      peerId,
+      nickname,
+      mine: peerId === currentPeerId
+    });
+  }
+
+  return participants.sort((a, b) => {
+    if (a.mine) return -1;
+    if (b.mine) return 1;
+    return a.nickname.localeCompare(b.nickname);
+  });
+}
+
 function getFallbackHtml(message) {
   const escaped = String(message || 'Loading DevTalk...')
     .replace(/&/g, '&amp;')
@@ -806,7 +928,26 @@ function getWebviewHtml(webview) {
       padding: 10px 10px 8px;
       border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border));
     }
+    .header-top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 8px;
+    }
     .title { font-size: 12px; font-weight: 600; line-height: 1.3; }
+    .presence {
+      justify-self: end;
+      max-width: 52%;
+      padding: 2px 6px;
+      border-radius: 999px;
+      color: var(--vscode-badge-foreground);
+      background: var(--vscode-badge-background);
+      font-size: 10px;
+      line-height: 1.25;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .status {
       margin-top: 3px;
       color: var(--vscode-descriptionForeground);
@@ -937,6 +1078,10 @@ function getWebviewHtml(webview) {
     }
     .theme-work .header { padding: 7px 9px 6px; }
     .theme-work .title { font-size: 11px; font-weight: 500; }
+    .theme-work .presence {
+      padding: 1px 5px;
+      font-size: 9px;
+    }
     .theme-work .status { font-size: 10px; }
     .theme-work .messages { padding: 6px 8px; }
     .theme-work .message,
@@ -1019,7 +1164,10 @@ function getWebviewHtml(webview) {
   </section>
   <main id="chat" class="chat">
     <header class="header">
-      <div class="title">DevTalk</div>
+      <div class="header-top">
+        <div class="title">DevTalk</div>
+        <div id="presence" class="presence" title="Online">0 online</div>
+      </div>
       <div id="status" class="status">Connecting...</div>
     </header>
     <section id="messages" class="messages" aria-live="polite"></section>
@@ -1039,6 +1187,7 @@ function getWebviewHtml(webview) {
     const nicknameInput = document.getElementById('nicknameInput');
     const messagesEl = document.getElementById('messages');
     const statusEl = document.getElementById('status');
+    const presenceEl = document.getElementById('presence');
     const form = document.getElementById('composer');
     const input = document.getElementById('input');
     const sendButton = document.getElementById('sendButton');
@@ -1133,6 +1282,10 @@ function getWebviewHtml(webview) {
       setupEl.hidden = true;
       chatEl.hidden = false;
       statusEl.textContent = state.status || '';
+      const participants = Array.isArray(state.participants) ? state.participants : [];
+      const names = participants.map((item) => item.mine ? 'You' : item.nickname).filter(Boolean);
+      presenceEl.textContent = participants.length + ' online';
+      presenceEl.title = names.length ? 'Online: ' + names.join(', ') : 'No one online';
       input.disabled = !state.canSend;
       sendButton.disabled = !state.canSend;
       attachButton.disabled = !state.canSend;

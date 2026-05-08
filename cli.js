@@ -303,6 +303,53 @@ function colorizeMessageLines(lines, message, speakerColors) {
   return lines.map((line) => `${bg}${fg} ${line} ${reset}`);
 }
 
+function getParticipantsFromPresenceState(state) {
+  const participants = [];
+
+  for (const [key, entries] of Object.entries(state || {})) {
+    const entry = Array.isArray(entries) ? entries[entries.length - 1] : undefined;
+    if (!entry) {
+      continue;
+    }
+
+    const id = String(entry.peerId || key);
+    participants.push({
+      peerId: id,
+      nickname: String(entry.nickname || 'someone').trim() || 'someone',
+      mine: id === peerId
+    });
+  }
+
+  return participants.sort((a, b) => {
+    if (a.mine) return -1;
+    if (b.mine) return 1;
+    return a.nickname.localeCompare(b.nickname);
+  });
+}
+
+function formatPresenceLabel(participants) {
+  const count = participants.length;
+  const names = participants
+    .slice(0, 3)
+    .map((item) => item.mine ? 'you' : item.nickname);
+  const suffix = count > 3 ? ' +' + (count - 3) : '';
+
+  return count + ' online' + (names.length ? ' · ' + names.join(', ') + suffix : '');
+}
+
+function visibleLength(value) {
+  return String(value).replace(/\x1b\[[0-9;]*m/g, '').length;
+}
+
+function truncateVisible(value, width) {
+  const text = String(value);
+  if (visibleLength(text) <= width) {
+    return text;
+  }
+
+  return text.slice(0, Math.max(0, width - 1)) + '…';
+}
+
 function createChatUi({ onLine, onClose }) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     const rl = readline.createInterface({
@@ -338,6 +385,7 @@ function createChatUi({ onLine, onClose }) {
   let closed = false;
   let lastInterruptAt = 0;
   let handling = Promise.resolve();
+  let presenceLabel = '0 online';
 
   readline.emitKeypressEvents(process.stdin);
   process.stdin.setRawMode(true);
@@ -348,6 +396,7 @@ function createChatUi({ onLine, onClose }) {
   }
 
   function drawInputBlock() {
+    drawPresence();
     process.stdout.write(divider() + '\n');
     process.stdout.write('> ' + input);
     moveCursorToInputPosition();
@@ -369,10 +418,31 @@ function createChatUi({ onLine, onClose }) {
   }
 
   function redrawInputLine() {
+    drawPresence();
     readline.cursorTo(process.stdout, 0);
     readline.clearLine(process.stdout, 0);
     process.stdout.write('> ' + input);
     moveCursorToInputPosition();
+  }
+
+  function drawPresence() {
+    const columns = process.stdout.columns || 80;
+    const label = truncateVisible(presenceLabel, Math.max(12, columns - 2));
+    const start = Math.max(0, columns - visibleLength(label) - 1);
+
+    process.stdout.write('\x1b7');
+    readline.cursorTo(process.stdout, start, 0);
+    readline.clearLine(process.stdout, 1);
+    process.stdout.write(label);
+    process.stdout.write('\x1b8');
+  }
+
+  function setPresenceLabel(label) {
+    presenceLabel = label || '0 online';
+    if (!closed) {
+      drawPresence();
+      moveCursorToInputPosition();
+    }
   }
 
   function writeLines(lines) {
@@ -412,6 +482,7 @@ function createChatUi({ onLine, onClose }) {
     closed = true;
     process.stdin.setRawMode(false);
     process.stdin.off('keypress', onKeypress);
+    process.stdout.off('resize', drawPresence);
     clearInputBlock();
     onClose();
   }
@@ -492,12 +563,14 @@ function createChatUi({ onLine, onClose }) {
   }
 
   process.stdin.on('keypress', onKeypress);
+  process.stdout.on('resize', drawPresence);
 
   return {
     start() {
       drawInputBlock();
     },
     writeLines,
+    setPresenceLabel,
     close
   };
 }
@@ -528,6 +601,9 @@ async function main() {
     config: {
       broadcast: {
         self: false
+      },
+      presence: {
+        key: peerId
       }
     }
   });
@@ -546,6 +622,22 @@ async function main() {
     for (const line of lines) {
       console.log(line);
     }
+  }
+
+  function updateParticipants() {
+    const participants = getParticipantsFromPresenceState(channel.presenceState());
+    const label = formatPresenceLabel(participants);
+    if (ui && typeof ui.setPresenceLabel === 'function') {
+      ui.setPresenceLabel(label);
+    }
+  }
+
+  function trackPresence() {
+    channel.track({
+      peerId,
+      nickname: config.nickname,
+      onlineAt: new Date().toISOString()
+    });
   }
 
   channel.on('broadcast', { event: 'message' }, ({ payload }) => {
@@ -569,9 +661,15 @@ async function main() {
     }, config.theme, { colorMode: config.colorMode, speakerColors }));
   });
 
+  channel.on('presence', { event: 'sync' }, () => {
+    updateParticipants();
+  });
+
   channel.subscribe((status) => {
     if (status === 'SUBSCRIBED') {
       ready = true;
+      trackPresence();
+      updateParticipants();
       writeLines([
         `Connected to DevTalk room ${ROOM_ID} as ${config.nickname}.`,
         'Type /help for commands.'
@@ -609,6 +707,8 @@ async function main() {
     try {
       await promptConfig(config);
       await saveConfig(config);
+      trackPresence();
+      updateParticipants();
       writeLines(['Saved DevTalk terminal settings. Restart DevTalk if URL or key changed.']);
     } finally {
       if (process.stdin.isTTY) {
@@ -755,6 +855,7 @@ async function main() {
     }
   });
   ui.start();
+  updateParticipants();
 }
 
 main().catch((error) => {
