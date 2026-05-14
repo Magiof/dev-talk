@@ -198,6 +198,58 @@ function safeFileName(name) {
   return cleaned.slice(0, 120) || 'file';
 }
 
+function safeStorageKey(name) {
+  const lastDot = name.lastIndexOf('.');
+  const base = lastDot > 0 ? name.slice(0, lastDot) : name;
+  const ext = lastDot > 0 ? name.slice(lastDot) : '';
+
+  const sanitize = (value) => value
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '');
+
+  const safeBase = sanitize(base) || 'file';
+  const safeExt = sanitize(ext);
+  const joined = safeExt ? safeBase + '.' + safeExt.replace(/^\.+/, '') : safeBase;
+  return joined.slice(0, 120) || 'file';
+}
+
+function sanitizeTerminalText(value, max = 4000) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  return value.replace(/[\x00-\x08\x0B-\x1F\x7F\x9B]/g, '').slice(0, max);
+}
+
+function sanitizeAttachment(attachment) {
+  if (!attachment || typeof attachment !== 'object') {
+    return undefined;
+  }
+  const url = typeof attachment.url === 'string' ? attachment.url.trim() : '';
+  if (!url || url.length > 2048) {
+    return undefined;
+  }
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return undefined;
+  }
+  const rawType = typeof attachment.type === 'string' ? attachment.type.trim().toLowerCase().slice(0, 100) : '';
+  const type = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(rawType) ? rawType : 'application/octet-stream';
+  return {
+    name: sanitizeTerminalText(attachment.name, 120) || 'file',
+    type,
+    size: Number.isFinite(Number(attachment.size)) && Number(attachment.size) > 0 ? Math.min(Number(attachment.size), MAX_FILE_SIZE) : 0,
+    url: parsed.toString()
+  };
+}
+
 function formatTime(value) {
   return new Date(value).toLocaleTimeString([], {
     hour: '2-digit',
@@ -316,10 +368,11 @@ function getParticipantsFromPresenceState(state) {
       continue;
     }
 
-    const id = String(entry.peerId || key);
+    const rawId = typeof entry.peerId === 'string' ? entry.peerId : String(key || '');
+    const id = rawId.slice(0, 128);
     participants.push({
       peerId: id,
-      nickname: String(entry.nickname || 'someone').trim() || 'someone',
+      nickname: sanitizeTerminalText(entry.nickname, 32) || 'someone',
       mine: id === peerId
     });
   }
@@ -666,21 +719,30 @@ async function main() {
   }
 
   channel.on('broadcast', { event: 'message' }, ({ payload }) => {
-    if (!payload || payload.kind !== 'devtalk-message' || payload.peerId === peerId) {
+    if (!payload || typeof payload !== 'object' || payload.kind !== 'devtalk-message' || payload.peerId === peerId) {
       return;
     }
-    if (payload.id && seen.has(payload.id)) {
+    const id = typeof payload.id === 'string' ? payload.id.slice(0, 128) : '';
+    if (id && seen.has(id)) {
       return;
     }
-    if (payload.id) {
-      seen.add(payload.id);
+    if (id) {
+      seen.add(id);
+      if (seen.size > 1024) {
+        seen.delete(seen.values().next().value);
+      }
+    }
+    const text = sanitizeTerminalText(payload.text);
+    const attachment = sanitizeAttachment(payload.attachment);
+    if (!text && !attachment) {
+      return;
     }
     writeLines(formatMessage({
-      id: payload.id || createId(),
-      peerId: String(payload.peerId || ''),
-      nickname: String(payload.nickname || 'someone'),
-      text: String(payload.text || ''),
-      attachment: payload.attachment,
+      id: id || createId(),
+      peerId: typeof payload.peerId === 'string' ? payload.peerId.slice(0, 128) : '',
+      nickname: sanitizeTerminalText(payload.nickname, 32) || 'someone',
+      text,
+      attachment,
       sentAt: Number(payload.sentAt) || Date.now(),
       mine: false
     }, config.theme, { colorMode: config.colorMode, speakerColors }));
@@ -779,12 +841,16 @@ async function main() {
   }
 
   async function sendText(text) {
+    const clean = sanitizeTerminalText(text);
+    if (!clean) {
+      return;
+    }
     await publish({
       id: createId(),
       kind: 'devtalk-message',
       peerId,
       nickname: config.nickname,
-      text,
+      text: clean,
       sentAt: Date.now()
     });
   }
@@ -802,11 +868,12 @@ async function main() {
     }
 
     const name = safeFileName(path.basename(filePath));
+    const storageName = safeStorageKey(name);
     const type = guessContentType(filePath);
     const objectPath = [
       ROOM_ID,
       new Date().toISOString().slice(0, 10),
-      createId() + '-' + name
+      createId() + '-' + storageName
     ].join('/');
     const buffer = await fs.promises.readFile(filePath);
 

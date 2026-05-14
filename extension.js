@@ -6,6 +6,12 @@ const os = require('os');
 const path = require('path');
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
+const MAX_TEXT_LENGTH = 4000;
+const MAX_NICKNAME_LENGTH = 32;
+const MAX_ATTACHMENT_NAME_LENGTH = 120;
+const MAX_URL_LENGTH = 2048;
+const MAX_UDP_PACKET_BYTES = 64 * 1024;
+const MAX_UDP_PEERS = 256;
 const DEFAULT_BUCKET = 'devtalk-files';
 const ROOM_ID = 'general';
 const UDP_PORT = 42424;
@@ -150,7 +156,14 @@ class DevTalkViewProvider {
         this.uploadFile(message.file);
       }
       if (message.type === 'openExternal' && typeof message.url === 'string') {
-        vscode.env.openExternal(vscode.Uri.parse(message.url));
+        const safeUrl = sanitizeHttpUrl(message.url);
+        if (safeUrl) {
+          try {
+            vscode.env.openExternal(vscode.Uri.parse(safeUrl));
+          } catch (error) {
+            logError('openExternal failed', error);
+          }
+        }
       }
       if (message.type === 'ready') {
         if (this.isViewVisible()) {
@@ -565,7 +578,7 @@ class DevTalkViewProvider {
   }
 
   async sendChat(rawText) {
-    const text = rawText.trim();
+    const text = clampText(rawText.trim(), MAX_TEXT_LENGTH);
     if (!text) {
       return;
     }
@@ -747,11 +760,17 @@ class DevTalkViewProvider {
     }
 
     const name = safeFileName(String(file.name || 'file'));
-    const type = String(file.type || 'application/octet-stream');
+    const storageName = safeStorageKey(name);
+    const type = safeMimeType(file.type);
     const size = Number(file.size || 0);
     const data = String(file.data || '');
 
     if (!name || !data) {
+      return;
+    }
+    if (!/^[A-Za-z0-9+/=]*$/.test(data)) {
+      this.status = 'File upload failed: invalid encoding.';
+      this.postState();
       return;
     }
     if (size > MAX_FILE_SIZE) {
@@ -770,7 +789,7 @@ class DevTalkViewProvider {
     const objectPath = [
       ROOM_ID,
       new Date().toISOString().slice(0, 10),
-      createId() + '-' + name
+      createId() + '-' + storageName
     ].join('/');
 
     this.status = 'Uploading ' + name + '...';
@@ -865,6 +884,10 @@ class DevTalkViewProvider {
   }
 
   receiveUdpPacket(buffer) {
+    if (!buffer || buffer.length === 0 || buffer.length > MAX_UDP_PACKET_BYTES) {
+      return;
+    }
+
     let payload;
     try {
       payload = JSON.parse(buffer.toString('utf8'));
@@ -872,21 +895,28 @@ class DevTalkViewProvider {
       return;
     }
 
-    if (!payload || payload.roomId !== ROOM_ID || payload.peerId === this.peerId) {
+    if (!payload || typeof payload !== 'object' || payload.roomId !== ROOM_ID) {
+      return;
+    }
+    const peerIdStr = typeof payload.peerId === 'string' ? payload.peerId.slice(0, 128) : '';
+    if (!peerIdStr || peerIdStr === this.peerId) {
       return;
     }
 
     if (payload.kind === 'devtalk-presence') {
-      this.udpPeers.set(String(payload.peerId), {
-        peerId: String(payload.peerId),
-        nickname: String(payload.nickname || 'Someone').trim() || 'Someone',
+      if (this.udpPeers.size >= MAX_UDP_PEERS && !this.udpPeers.has(peerIdStr)) {
+        return;
+      }
+      this.udpPeers.set(peerIdStr, {
+        peerId: peerIdStr,
+        nickname: clampNickname(payload.nickname),
         lastSeen: Date.now()
       });
       this.updateUdpParticipants();
       return;
     }
 
-    this.receiveMessage(payload);
+    this.receiveMessage({ ...payload, peerId: peerIdStr });
   }
 
   updateUdpParticipants() {
@@ -931,27 +961,37 @@ class DevTalkViewProvider {
   }
 
   receiveMessage(payload) {
-    if (!payload || payload.kind !== 'devtalk-message') {
+    if (!payload || typeof payload !== 'object' || payload.kind !== 'devtalk-message') {
       return;
     }
     if (payload.peerId === this.peerId) {
       return;
     }
 
-    const messageId = String(payload.id || '');
+    const messageId = typeof payload.id === 'string' ? payload.id.slice(0, 128) : '';
     if (messageId && this.seenMessageIds.has(messageId)) {
       return;
     }
     if (messageId) {
       this.seenMessageIds.add(messageId);
+      if (this.seenMessageIds.size > 1024) {
+        const oldest = this.seenMessageIds.values().next().value;
+        this.seenMessageIds.delete(oldest);
+      }
+    }
+
+    const text = clampText(payload.text, MAX_TEXT_LENGTH);
+    const attachment = normalizeAttachment(payload.attachment);
+    if (!text && !attachment) {
+      return;
     }
 
     this.addMessage({
-      id: payload.id || createId(),
-      text: String(payload.text || ''),
-      nickname: String(payload.nickname || 'Someone'),
-      peerId: String(payload.peerId || ''),
-      attachment: normalizeAttachment(payload.attachment),
+      id: messageId || createId(),
+      text,
+      nickname: clampNickname(payload.nickname),
+      peerId: typeof payload.peerId === 'string' ? payload.peerId.slice(0, 128) : '',
+      attachment,
       mine: false,
       sentAt: Number(payload.sentAt) || Date.now()
     });
@@ -1140,6 +1180,24 @@ function safeFileName(name) {
   return cleaned.slice(0, 120) || 'file';
 }
 
+function safeStorageKey(name) {
+  const lastDot = name.lastIndexOf('.');
+  const base = lastDot > 0 ? name.slice(0, lastDot) : name;
+  const ext = lastDot > 0 ? name.slice(lastDot) : '';
+
+  const sanitize = (value) => value
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '');
+
+  const safeBase = sanitize(base) || 'file';
+  const safeExt = sanitize(ext);
+  const joined = safeExt ? safeBase + '.' + safeExt.replace(/^\.+/, '') : safeBase;
+  return joined.slice(0, 120) || 'file';
+}
+
 function getUdpSendAddresses() {
   const addresses = new Set([UDP_MULTICAST_ADDRESS, '255.255.255.255']);
   const interfaces = os.networkInterfaces();
@@ -1186,20 +1244,73 @@ function normalizeAttachment(attachment) {
     return undefined;
   }
 
-  const url = String(attachment.url || '');
+  const url = sanitizeHttpUrl(attachment.url);
   if (!url) {
     return undefined;
   }
 
-  const type = String(attachment.type || 'application/octet-stream');
+  const type = safeMimeType(attachment.type);
+  const name = clampText(attachment.name, MAX_ATTACHMENT_NAME_LENGTH) || 'file';
+  const rawSize = Number(attachment.size);
+  const size = Number.isFinite(rawSize) && rawSize > 0 ? Math.min(rawSize, MAX_FILE_SIZE) : 0;
+  const path = typeof attachment.path === 'string' ? attachment.path.slice(0, 512) : '';
   return {
-    name: String(attachment.name || 'file'),
+    name,
     type,
-    size: Number(attachment.size || 0),
+    size,
     url,
-    path: String(attachment.path || ''),
-    isImage: Boolean(attachment.isImage || type.startsWith('image/'))
+    path,
+    isImage: type.startsWith('image/')
   };
+}
+
+function sanitizeHttpUrl(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_URL_LENGTH) {
+    return '';
+  }
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return '';
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return '';
+  }
+  return parsed.toString();
+}
+
+function safeMimeType(value) {
+  if (typeof value !== 'string') {
+    return 'application/octet-stream';
+  }
+  const trimmed = value.trim().toLowerCase().slice(0, 100);
+  if (!/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(trimmed)) {
+    return 'application/octet-stream';
+  }
+  return trimmed;
+}
+
+function clampText(value, max) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  if (value.length <= max) {
+    return value;
+  }
+  return value.slice(0, max);
+}
+
+function clampNickname(value) {
+  if (typeof value !== 'string') {
+    return 'Someone';
+  }
+  const trimmed = value.replace(/[\x00-\x1F\x7F]/g, '').trim().slice(0, MAX_NICKNAME_LENGTH);
+  return trimmed || 'Someone';
 }
 
 function getParticipantsFromPresenceState(state, currentPeerId) {
@@ -1211,11 +1322,11 @@ function getParticipantsFromPresenceState(state, currentPeerId) {
       continue;
     }
 
-    const peerId = String(entry.peerId || key);
-    const nickname = String(entry.nickname || 'Someone').trim() || 'Someone';
+    const rawPeerId = typeof entry.peerId === 'string' ? entry.peerId : String(key || '');
+    const peerId = rawPeerId.slice(0, 128);
     participants.push({
       peerId,
-      nickname,
+      nickname: clampNickname(entry.nickname),
       mine: peerId === currentPeerId
     });
   }
